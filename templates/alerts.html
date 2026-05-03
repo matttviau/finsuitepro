@@ -1,0 +1,878 @@
+{% extends "base.html" %}
+{% block title %}Alert Center — SwiftClarity Terminal™{% endblock %}
+
+{% block content %}
+<div class="module-header">
+    <span class="module-header__dot" style="color:var(--green)">🔔</span>
+    <span class="module-header__title">Alert Center</span>
+    <span class="module-header__sub">Price, momentum &amp; indicator alerts — auto-checked on every visit</span>
+    <span class="module-header__tag" style="background:var(--green);color:#031A0C">ALERTS</span>
+</div>
+
+<!-- Stats strip -->
+<div class="alert-stats-row">
+    <div class="alert-stat-chip">
+        <span class="alert-stat-val" id="as-total">—</span>
+        <span class="alert-stat-lbl">Total</span>
+    </div>
+    <div class="alert-stat-chip alert-stat-chip--blue">
+        <span class="alert-stat-val" id="as-active">—</span>
+        <span class="alert-stat-lbl">Active</span>
+    </div>
+    <div class="alert-stat-chip alert-stat-chip--red">
+        <span class="alert-stat-val" id="as-triggered">—</span>
+        <span class="alert-stat-lbl">Triggered</span>
+    </div>
+    <div class="alert-stat-chip alert-stat-chip--dim">
+        <span class="alert-stat-val" id="as-paused">—</span>
+        <span class="alert-stat-lbl">Paused</span>
+    </div>
+</div>
+
+<!-- Master tab bar -->
+<div class="controls" style="margin-bottom:6px">
+    <div class="controls__row" style="flex-wrap:wrap;gap:8px">
+        <div class="tabs" style="margin:0;border-bottom:none">
+            <button class="tab-btn active" id="main-tab-list"
+                    onclick="setMainTab('list',this)">My Alerts</button>
+            <button class="tab-btn" id="main-tab-qs"
+                    onclick="setMainTab('qs',this)"
+                    style="color:var(--green)">⚡ Quick Setup</button>
+        </div>
+        <!-- sub-controls only shown on My Alerts panel -->
+        <div id="list-toolbar" style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+            <div class="controls__sep"></div>
+            <div class="tabs" style="margin:0;border-bottom:none">
+                <button class="tab-btn active" onclick="setAlertTab('active',this)">Active</button>
+                <button class="tab-btn" onclick="setAlertTab('triggered',this)">
+                    Triggered
+                    <span id="triggered-badge" class="alert-tab-badge" style="display:none">0</span>
+                </button>
+                <button class="tab-btn" onclick="setAlertTab('all',this)">All</button>
+            </div>
+            <div class="controls__sep"></div>
+            <button class="btn btn--primary btn--sm" onclick="checkAllAlerts()" id="check-btn">⟳ Check Now</button>
+            <button class="btn btn--sm" onclick="openCreateAlert()"
+                    style="color:var(--green);border-color:var(--green)55;background:rgba(0,212,120,.06)">
+                ＋ New Alert
+            </button>
+        </div>
+    </div>
+</div>
+<div id="alert-check-status"
+     style="font-size:12px;color:var(--text-sec);padding:0 2px 10px;min-height:20px"></div>
+
+<!-- ═══ MY ALERTS PANEL ═══ -->
+<div id="panel-list">
+    <div id="alerts-loading" class="loading" style="display:none">
+        <div class="spinner"></div> Checking live data…
+    </div>
+    <div id="alerts-list"></div>
+</div>
+
+<!-- ═══ QUICK SETUP PANEL ═══ -->
+<div id="panel-qs" style="display:none">
+
+    <!-- 1. Preset bundles -->
+    <div class="qs-section">
+        <div class="qs-section-header">
+            <span class="qs-section-title">Preset Bundles</span>
+            <span class="qs-section-sub">Click a bundle to auto-select assets &amp; conditions — combine as many as you like</span>
+        </div>
+        <div class="bundle-grid" id="bundle-grid"><!-- rendered by JS --></div>
+    </div>
+
+    <!-- 2. Asset picker -->
+    <div class="qs-section">
+        <div class="qs-section-header" style="justify-content:space-between">
+            <div>
+                <span class="qs-section-title">Assets</span>
+                <span class="qs-section-sub">Select individual tickers to monitor</span>
+            </div>
+            <div style="display:flex;gap:8px;align-items:center">
+                <span id="qs-ticker-count"
+                      style="font-size:12px;color:var(--text-sec)">0 selected</span>
+                <button class="btn btn--sm"
+                        onclick="qsClearTickers()"
+                        style="font-size:11px;padding:3px 10px;color:var(--text-dim);background:transparent;border-color:var(--border)">
+                    Clear
+                </button>
+            </div>
+        </div>
+        <div id="asset-groups"><!-- rendered by JS --></div>
+    </div>
+
+    <!-- 3. Condition toggles -->
+    <div class="qs-section">
+        <div class="qs-section-header">
+            <span class="qs-section-title">Alert Conditions</span>
+            <span class="qs-section-sub">Toggle which conditions to apply across all selected assets</span>
+        </div>
+        <div class="cond-grid" id="cond-grid"><!-- rendered by JS --></div>
+
+        <!-- Threshold controls -->
+        <div class="qs-threshold-row" id="qs-threshold-row" style="display:none">
+            <div class="qs-threshold-block">
+                <label class="qs-th-label">
+                    <input type="checkbox" id="qs-smart" checked onchange="qsUpdateThresholds()">
+                    Smart thresholds
+                    <span style="font-size:11px;color:var(--text-dim);font-weight:400">
+                        (auto-scales % by asset volatility tier)
+                    </span>
+                </label>
+            </div>
+            <div id="qs-manual-pct" style="display:none;gap:18px;flex-wrap:wrap">
+                <div class="qs-th-field">
+                    <span class="qs-th-label">Day Gain&nbsp;%</span>
+                    <input type="number" id="qs-pct-up" class="form-control qs-num"
+                           value="3" min="0.1" step="0.5" oninput="qsUpdatePreview()">
+                </div>
+                <div class="qs-th-field">
+                    <span class="qs-th-label">Day Drop&nbsp;%</span>
+                    <input type="number" id="qs-pct-dn" class="form-control qs-num"
+                           value="3" min="0.1" step="0.5" oninput="qsUpdatePreview()">
+                </div>
+            </div>
+            <div id="qs-rsi-row" style="display:none;gap:18px;flex-wrap:wrap">
+                <div class="qs-th-field">
+                    <span class="qs-th-label">RSI Overbought&nbsp;≥</span>
+                    <input type="number" id="qs-rsi-hi" class="form-control qs-num"
+                           value="70" min="50" max="100" step="1" oninput="qsUpdatePreview()">
+                </div>
+                <div class="qs-th-field">
+                    <span class="qs-th-label">RSI Oversold&nbsp;≤</span>
+                    <input type="number" id="qs-rsi-lo" class="form-control qs-num"
+                           value="30" min="0" max="50" step="1" oninput="qsUpdatePreview()">
+                </div>
+            </div>
+            <div id="qs-vol-row" style="display:none;gap:18px">
+                <div class="qs-th-field">
+                    <span class="qs-th-label">Volume&nbsp;multiplier</span>
+                    <input type="number" id="qs-vol" class="form-control qs-num"
+                           value="2" min="1.1" step="0.5" oninput="qsUpdatePreview()">
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- 4. Priority + Create -->
+    <div class="qs-footer" id="qs-footer">
+        <div class="qs-footer__left">
+            <span class="qs-count-lbl">Priority</span>
+            <div class="al-priority-row">
+                <label class="al-priority-opt">
+                    <input type="radio" name="qs-priority" value="low">
+                    <span class="priority-badge priority-badge--low">Low</span>
+                </label>
+                <label class="al-priority-opt">
+                    <input type="radio" name="qs-priority" value="medium" checked>
+                    <span class="priority-badge priority-badge--medium">Medium</span>
+                </label>
+                <label class="al-priority-opt">
+                    <input type="radio" name="qs-priority" value="high">
+                    <span class="priority-badge priority-badge--high">High</span>
+                </label>
+                <label class="al-priority-opt">
+                    <input type="radio" name="qs-priority" value="critical">
+                    <span class="priority-badge priority-badge--critical">Critical</span>
+                </label>
+            </div>
+        </div>
+        <div class="qs-footer__right">
+            <span class="qs-count" id="qs-count">0 alerts to create</span>
+            <button class="btn btn--primary" id="qs-create-btn"
+                    onclick="createQuickAlerts()" disabled>
+                ⚡ Create Alerts
+            </button>
+        </div>
+    </div>
+
+</div><!-- /panel-qs -->
+
+<!-- ═══ CREATE ALERT DRAWER ═══ -->
+<div class="alert-drawer-overlay" id="alert-drawer-overlay" onclick="closeCreateAlert()"></div>
+<aside class="alert-drawer" id="alert-drawer">
+    <div class="alert-drawer__header">
+        <span class="alert-drawer__title">＋ New Alert</span>
+        <button class="alert-drawer__close" onclick="closeCreateAlert()">✕</button>
+    </div>
+    <div class="alert-drawer__body">
+        <div class="form-group">
+            <label>Ticker *</label>
+            <input type="text" id="al-ticker" class="form-control" placeholder="AAPL"
+                   maxlength="6" style="text-transform:uppercase;font-weight:700;letter-spacing:1px">
+        </div>
+        <div class="form-group">
+            <label>Label <span class="al-opt-lbl">optional</span></label>
+            <input type="text" id="al-label" class="form-control" placeholder="e.g. AAPL breakout watch">
+        </div>
+        <div class="form-group">
+            <label>Condition *</label>
+            <select id="al-condition" class="form-control" onchange="updateAlertForm()">
+                <optgroup label="── Price ──">
+                    <option value="price_above">Price rises above $</option>
+                    <option value="price_below">Price falls below $</option>
+                    <option value="pct_change_above">Day gain ≥ +%</option>
+                    <option value="pct_change_below">Day drop ≥ −%</option>
+                </optgroup>
+                <optgroup label="── Momentum Indicators ──">
+                    <option value="rsi_above">RSI exceeds level (overbought)</option>
+                    <option value="rsi_below">RSI falls under level (oversold)</option>
+                    <option value="macd_bull_cross">MACD bullish crossover</option>
+                    <option value="macd_bear_cross">MACD bearish crossover</option>
+                    <option value="bb_upper_break">Price closes above upper Bollinger Band</option>
+                    <option value="bb_lower_break">Price closes below lower Bollinger Band</option>
+                    <option value="volume_spike">Volume spike (N× 20-day average)</option>
+                </optgroup>
+                <optgroup label="── Moving Averages ──">
+                    <option value="sma50_cross_above">Price crosses above SMA 50</option>
+                    <option value="sma50_cross_below">Price crosses below SMA 50</option>
+                    <option value="sma200_cross_above">Price crosses above SMA 200 (golden cross)</option>
+                    <option value="sma200_cross_below">Price crosses below SMA 200 (death cross)</option>
+                </optgroup>
+                <optgroup label="── Milestones ──">
+                    <option value="new_52w_high">New 52-week high</option>
+                    <option value="new_52w_low">New 52-week low</option>
+                </optgroup>
+            </select>
+        </div>
+        <div class="form-group" id="al-threshold-group">
+            <label id="al-threshold-label">Threshold *</label>
+            <input type="number" id="al-threshold" class="form-control"
+                   placeholder="0.00" step="0.01" min="0">
+        </div>
+        <div class="form-group">
+            <label>Priority</label>
+            <div class="al-priority-row">
+                <label class="al-priority-opt"><input type="radio" name="al-priority" value="low">
+                    <span class="priority-badge priority-badge--low">Low</span></label>
+                <label class="al-priority-opt"><input type="radio" name="al-priority" value="medium" checked>
+                    <span class="priority-badge priority-badge--medium">Medium</span></label>
+                <label class="al-priority-opt"><input type="radio" name="al-priority" value="high">
+                    <span class="priority-badge priority-badge--high">High</span></label>
+                <label class="al-priority-opt"><input type="radio" name="al-priority" value="critical">
+                    <span class="priority-badge priority-badge--critical">Critical</span></label>
+            </div>
+        </div>
+        <div class="form-group">
+            <label>Expires <span class="al-opt-lbl">optional</span></label>
+            <input type="date" id="al-expires" class="form-control">
+        </div>
+        <div class="form-group">
+            <label class="fund-toggle" style="display:inline-flex;gap:8px;align-items:center;cursor:pointer">
+                <input type="checkbox" id="al-repeat">
+                <span style="font-size:13px;color:var(--text-sec)">Re-arm after trigger</span>
+            </label>
+        </div>
+        <div class="form-group">
+            <label>Notes <span class="al-opt-lbl">optional</span></label>
+            <textarea id="al-notes" class="form-control" rows="2"
+                      placeholder="Why you set this alert…"></textarea>
+        </div>
+        <button class="btn btn--primary" style="width:100%;margin-top:4px" onclick="submitAlert()">
+            Create Alert
+        </button>
+        <div id="al-error" style="color:var(--red);font-size:12px;margin-top:8px;display:none"></div>
+    </div>
+</aside>
+
+{% endblock %}
+
+{% block scripts %}
+<script src="{{ url_for('static', filename='js/app.js') }}"></script>
+<script>
+/* ══════════════════════════════════════════════════════════════════
+   ALERT CENTER — complete client logic
+   ══════════════════════════════════════════════════════════════════ */
+
+/* ── shared state ── */
+let _allAlerts = [];
+let _alertTab  = 'active';
+let _mainTab   = 'list';
+
+/* ═══════════════════════════════════════
+   QUICK SETUP DATA
+   ═══════════════════════════════════════ */
+
+const ASSET_GROUPS = [
+    { id:'broad',    icon:'📊', label:'Broad Market',    color:'var(--blue)',   assets:[
+        { t:'SPY',  n:'S&P 500 ETF',           tier:'low'       },
+        { t:'QQQ',  n:'Nasdaq-100 ETF',         tier:'medium'    },
+        { t:'IWM',  n:'Russell 2000 ETF',       tier:'medium'    },
+        { t:'DIA',  n:'Dow Jones ETF',           tier:'low'       },
+        { t:'VTI',  n:'Total Market ETF',        tier:'low'       },
+        { t:'VOO',  n:'Vanguard S&P 500',        tier:'low'       },
+    ]},
+    { id:'sectors',  icon:'🏭', label:'Sector ETFs',     color:'var(--orange)', assets:[
+        { t:'XLK',  n:'Technology',              tier:'medium'    },
+        { t:'XLF',  n:'Financials',              tier:'medium'    },
+        { t:'XLE',  n:'Energy',                  tier:'high'      },
+        { t:'XLV',  n:'Health Care',             tier:'medium'    },
+        { t:'XLI',  n:'Industrials',             tier:'medium'    },
+        { t:'XLU',  n:'Utilities',               tier:'low'       },
+        { t:'XLRE', n:'Real Estate',             tier:'medium'    },
+        { t:'XLY',  n:'Consumer Discret.',       tier:'medium'    },
+        { t:'XLP',  n:'Consumer Staples',        tier:'low'       },
+        { t:'XLB',  n:'Materials',               tier:'medium'    },
+    ]},
+    { id:'megacap',  icon:'⚡', label:'Mega Cap Tech',   color:'var(--cyan)',   assets:[
+        { t:'NVDA', n:'NVIDIA',                  tier:'very_high' },
+        { t:'AAPL', n:'Apple',                   tier:'medium'    },
+        { t:'MSFT', n:'Microsoft',               tier:'medium'    },
+        { t:'GOOGL',n:'Alphabet',                tier:'medium'    },
+        { t:'AMZN', n:'Amazon',                  tier:'medium'    },
+        { t:'META', n:'Meta',                    tier:'high'      },
+        { t:'TSLA', n:'Tesla',                   tier:'very_high' },
+    ]},
+    { id:'bluechip', icon:'💼', label:'Blue Chip',       color:'var(--gold)',   assets:[
+        { t:'JPM',  n:'JPMorgan Chase',          tier:'medium'    },
+        { t:'BAC',  n:'Bank of America',         tier:'medium'    },
+        { t:'JNJ',  n:'Johnson & Johnson',       tier:'low'       },
+        { t:'V',    n:'Visa',                    tier:'low'       },
+        { t:'WMT',  n:'Walmart',                 tier:'low'       },
+        { t:'XOM',  n:'ExxonMobil',              tier:'medium'    },
+        { t:'BRKB', n:'Berkshire Hathaway B',    tier:'low'       },
+        { t:'UNH',  n:'UnitedHealth',            tier:'medium'    },
+    ]},
+    { id:'commodities',icon:'🥇',label:'Commodities',   color:'var(--gold)',   assets:[
+        { t:'GLD',  n:'Gold ETF',                tier:'medium'    },
+        { t:'SLV',  n:'Silver ETF',              tier:'high'      },
+        { t:'USO',  n:'Oil ETF',                 tier:'high'      },
+        { t:'GDX',  n:'Gold Miners ETF',         tier:'high'      },
+        { t:'PDBC', n:'Commodity Basket ETF',    tier:'medium'    },
+        { t:'CORN', n:'Corn ETF',                tier:'high'      },
+    ]},
+    { id:'bonds',    icon:'📋', label:'Fixed Income',    color:'var(--purple)', assets:[
+        { t:'TLT',  n:'20-Year Treasury ETF',    tier:'medium'    },
+        { t:'AGG',  n:'US Bond Aggregate',       tier:'low'       },
+        { t:'HYG',  n:'High Yield Bonds',        tier:'medium'    },
+        { t:'LQD',  n:'Investment Grade Corp',   tier:'low'       },
+        { t:'TIPS', n:'Inflation-Protected Tsy', tier:'low'       },
+    ]},
+    { id:'volatility',icon:'🌩',label:'Volatility',     color:'var(--red)',    assets:[
+        { t:'VIXY', n:'VIX Short-Term Futures',  tier:'very_high' },
+        { t:'UVXY', n:'1.5x VIX ETF',            tier:'very_high' },
+        { t:'SVXY', n:'Inverse VIX ETF',         tier:'very_high' },
+    ]},
+    { id:'crypto',   icon:'🪙', label:'Crypto ETFs',     color:'var(--orange)', assets:[
+        { t:'IBIT', n:'iShares Bitcoin ETF',     tier:'very_high' },
+        { t:'FBTC', n:'Fidelity Bitcoin ETF',    tier:'very_high' },
+        { t:'ETHA', n:'iShares Ethereum ETF',    tier:'very_high' },
+        { t:'BITO', n:'Bitcoin Strategy ETF',    tier:'very_high' },
+    ]},
+];
+
+/* Build ticker→meta lookup */
+const TICKER_META = {};
+ASSET_GROUPS.forEach(g => g.assets.forEach(a => {
+    TICKER_META[a.t] = { name: a.n, tier: a.tier, group: g.id, color: g.color };
+}));
+
+/* Volatility-based % default thresholds */
+const TIER_PCT = { low: 1.5, medium: 3.0, high: 5.0, very_high: 8.0 };
+
+/* Condition types available in Quick Setup */
+const QS_COND_LIST = [
+    { id:'pct_up',     cond:'pct_change_above',  icon:'📈', label:'Day Gain ≥',      desc:'+%',                   hasTh:true,  thKey:'pct'    },
+    { id:'pct_dn',     cond:'pct_change_below',  icon:'📉', label:'Day Drop ≥',      desc:'−%',                   hasTh:true,  thKey:'pct'    },
+    { id:'rsi_ob',     cond:'rsi_above',          icon:'🔴', label:'RSI Overbought',  desc:'> level',              hasTh:true,  thKey:'rsi_hi' },
+    { id:'rsi_os',     cond:'rsi_below',          icon:'🟢', label:'RSI Oversold',    desc:'< level',              hasTh:true,  thKey:'rsi_lo' },
+    { id:'macd_bull',  cond:'macd_bull_cross',    icon:'⚡', label:'MACD',            desc:'Bull Cross',           hasTh:false              },
+    { id:'macd_bear',  cond:'macd_bear_cross',    icon:'⚡', label:'MACD',            desc:'Bear Cross',           hasTh:false              },
+    { id:'bb_up',      cond:'bb_upper_break',     icon:'↑',  label:'BB Upper',        desc:'Break',                hasTh:false              },
+    { id:'bb_dn',      cond:'bb_lower_break',     icon:'↓',  label:'BB Lower',        desc:'Break',                hasTh:false              },
+    { id:'sma50_up',   cond:'sma50_cross_above',  icon:'↗',  label:'SMA 50',          desc:'Cross Above',          hasTh:false              },
+    { id:'sma50_dn',   cond:'sma50_cross_below',  icon:'↘',  label:'SMA 50',          desc:'Cross Below',          hasTh:false              },
+    { id:'sma200_up',  cond:'sma200_cross_above', icon:'🌟', label:'Golden Cross',    desc:'SMA 200 ↑',            hasTh:false              },
+    { id:'sma200_dn',  cond:'sma200_cross_below', icon:'💀', label:'Death Cross',     desc:'SMA 200 ↓',            hasTh:false              },
+    { id:'vol_spike',  cond:'volume_spike',        icon:'🔊', label:'Volume Spike',   desc:'N× avg',               hasTh:true,  thKey:'vol'    },
+    { id:'h52',        cond:'new_52w_high',        icon:'🏔', label:'52W High',        desc:'New all-time zone',    hasTh:false              },
+    { id:'l52',        cond:'new_52w_low',         icon:'🕳', label:'52W Low',         desc:'Hitting new bottom',   hasTh:false              },
+    { id:'vol_up_bb',  cond:'bb_upper_break',      icon:'💥', label:'Breakout',        desc:'Above Upper Band',     hasTh:false              },
+];
+
+/* Remove duplicate cond entries — use only first occurrence */
+const _seenConds = new Set();
+const QS_CONDS = QS_COND_LIST.filter(c => {
+    if (_seenConds.has(c.cond)) return false;
+    _seenConds.add(c.cond); return true;
+});
+
+/* Preset bundles */
+const QS_BUNDLES = [
+    { id:'market_pulse',    icon:'📊', color:'var(--blue)',   label:'Market Pulse',
+      desc:'Broad market ETF movements', priority:'medium',
+      tickers:['SPY','QQQ','IWM','DIA'],
+      conds:['pct_up','pct_dn','rsi_ob','rsi_os'] },
+    { id:'sector_rotation', icon:'🔄', color:'var(--orange)', label:'Sector Rotation',
+      desc:'Key sector shifts & crossovers', priority:'medium',
+      tickers:['XLK','XLF','XLE','XLV','XLI','XLU'],
+      conds:['pct_up','pct_dn','sma50_up','sma50_dn'] },
+    { id:'growth_leaders',  icon:'⚡', color:'var(--cyan)',   label:'Growth Leaders',
+      desc:'High-growth mega-cap tech', priority:'high',
+      tickers:['NVDA','TSLA','META','AAPL','MSFT','GOOGL'],
+      conds:['pct_up','pct_dn','rsi_ob','rsi_os','macd_bull','macd_bear'] },
+    { id:'safe_haven',      icon:'🥇', color:'var(--gold)',   label:'Safe Havens',
+      desc:'Gold, bonds & defensive ETFs', priority:'low',
+      tickers:['GLD','TLT','AGG','SLV'],
+      conds:['pct_up','pct_dn','h52','sma50_up'] },
+    { id:'crypto_watch',    icon:'🪙', color:'var(--purple)', label:'Crypto Watch',
+      desc:'Bitcoin & Ethereum ETFs', priority:'high',
+      tickers:['IBIT','FBTC','ETHA','BITO'],
+      conds:['pct_up','pct_dn','rsi_ob','rsi_os'] },
+    { id:'ma_signals',      icon:'📡', color:'var(--blue)',   label:'MA Signals',
+      desc:'Golden/death cross alerts', priority:'medium',
+      tickers:['SPY','QQQ','AAPL','MSFT','NVDA','GOOGL','AMZN'],
+      conds:['sma200_up','sma200_dn','sma50_up','sma50_dn','macd_bull','macd_bear'] },
+    { id:'volatility_watch',icon:'🌩', color:'var(--red)',    label:'Volatility Watch',
+      desc:'VIX products & big movers', priority:'critical',
+      tickers:['VIXY','UVXY','TSLA','NVDA'],
+      conds:['pct_up','pct_dn','vol_spike','rsi_ob'] },
+    { id:'income_tracker',  icon:'📋', color:'var(--purple)', label:'Income Tracker',
+      desc:'Bonds, REITs & dividend ETFs', priority:'low',
+      tickers:['TLT','HYG','LQD','XLRE','AGG','TIPS'],
+      conds:['pct_dn','sma50_dn','l52'] },
+];
+
+/* ── Quick Setup state ── */
+let _qsTickers = new Set();
+let _qsConds   = new Set();
+
+/* ═══════════════════════════════════════
+   SHARED HELPERS
+   ═══════════════════════════════════════ */
+
+const PRIORITY_COLORS = { critical:'var(--red)', high:'var(--orange)', medium:'var(--blue)', low:'var(--text-dim)' };
+const COND_LABEL = {
+    price_above:t=>`Price ≥ $${t}`,       price_below:t=>`Price ≤ $${t}`,
+    pct_change_above:t=>`Day gain ≥ +${t}%`, pct_change_below:t=>`Day drop ≥ −${t}%`,
+    rsi_above:t=>`RSI ≥ ${t}`,            rsi_below:t=>`RSI ≤ ${t}`,
+    macd_bull_cross:()=>'MACD bull cross', macd_bear_cross:()=>'MACD bear cross',
+    bb_upper_break:()=>'BB upper break',   bb_lower_break:()=>'BB lower break',
+    volume_spike:t=>`Volume ≥ ${t}× avg`, new_52w_high:()=>'New 52W high',
+    new_52w_low:()=>'New 52W low',         sma50_cross_above:()=>'Crosses SMA 50 ↑',
+    sma50_cross_below:()=>'Below SMA 50 ↓', sma200_cross_above:()=>'Golden cross ↑',
+    sma200_cross_below:()=>'Death cross ↓',
+};
+const NEEDS_THRESHOLD = new Set(['price_above','price_below','pct_change_above','pct_change_below','rsi_above','rsi_below','volume_spike']);
+const THRESHOLD_LABEL = {
+    price_above:'Price ($)',price_below:'Price ($)',pct_change_above:'Change %',
+    pct_change_below:'Change %',rsi_above:'RSI level (0–100)',rsi_below:'RSI level (0–100)',
+    volume_spike:'Volume multiplier',
+};
+const THRESHOLD_DEFAULT = { rsi_above:'70',rsi_below:'30',pct_change_above:'3',pct_change_below:'3',volume_spike:'2' };
+
+/* ═══════════════════════════════════════
+   TAB SWITCHING
+   ═══════════════════════════════════════ */
+
+function setMainTab(tab, btn) {
+    _mainTab = tab;
+    document.querySelectorAll('#main-tab-list,#main-tab-qs').forEach(b => b.classList.remove('active'));
+    btn.classList.add('active');
+    document.getElementById('panel-list').style.display = tab === 'list' ? '' : 'none';
+    document.getElementById('panel-qs').style.display   = tab === 'qs'   ? '' : 'none';
+    document.getElementById('list-toolbar').style.display = tab === 'list' ? 'flex' : 'none';
+}
+
+/* ═══════════════════════════════════════
+   MY ALERTS — load & render
+   ═══════════════════════════════════════ */
+
+async function loadAlerts() {
+    const res = await fetch('/api/alerts');
+    _allAlerts = await res.json();
+    renderAlerts();
+    renderAlertStats();
+}
+
+function renderAlertStats() {
+    document.getElementById('as-total').textContent     = _allAlerts.length;
+    document.getElementById('as-active').textContent    = _allAlerts.filter(a=>a.status==='active').length;
+    document.getElementById('as-triggered').textContent = _allAlerts.filter(a=>a.status==='triggered').length;
+    document.getElementById('as-paused').textContent    = _allAlerts.filter(a=>a.status==='paused').length;
+    const triggered = _allAlerts.filter(a=>a.status==='triggered').length;
+    const badge = document.getElementById('triggered-badge');
+    badge.style.display = triggered > 0 ? '' : 'none';
+    if (triggered > 0) badge.textContent = triggered;
+}
+
+function setAlertTab(tab, btn) {
+    _alertTab = tab;
+    btn.closest('.tabs').querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
+    btn.classList.add('active');
+    renderAlerts();
+}
+
+function renderAlerts() {
+    const list = document.getElementById('alerts-list');
+    let alerts = [..._allAlerts];
+    if (_alertTab === 'active')    alerts = alerts.filter(a => a.status==='active'||a.status==='paused');
+    if (_alertTab === 'triggered') alerts = alerts.filter(a => a.status==='triggered');
+    if (!alerts.length) {
+        const msgs = { triggered:'No triggered alerts right now.',
+                       active:'No active alerts — create one to get started.',
+                       all:'No alerts yet.' };
+        list.innerHTML = `<div class="alert-empty">
+            <div class="alert-empty__icon">🔔</div>
+            <p style="color:var(--text-sec);margin-bottom:16px">${msgs[_alertTab]}</p>
+            ${_alertTab!=='triggered'?'<button class="btn btn--primary btn--sm" onclick="openCreateAlert()">＋ New Alert</button><button class="btn btn--sm" onclick="setMainTab(\'qs\',document.getElementById(\'main-tab-qs\'))" style="margin-left:8px;color:var(--green);border-color:var(--green)55;background:rgba(0,212,120,.06)">⚡ Quick Setup</button>':''}
+        </div>`; return;
+    }
+    list.innerHTML = alerts.map(renderAlertCard).join('');
+}
+
+function renderAlertCard(a) {
+    const pColor = PRIORITY_COLORS[a.priority] || PRIORITY_COLORS.low;
+    const condLabel = COND_LABEL[a.condition_type]?.(a.threshold) ?? a.condition_type;
+    const statusBadge = {
+        active:   `<span class="alert-badge alert-badge--active">● Active</span>`,
+        triggered:`<span class="alert-badge alert-badge--triggered">⚡ Triggered</span>`,
+        paused:   `<span class="alert-badge alert-badge--paused">⏸ Paused</span>`,
+        dismissed:`<span class="alert-badge alert-badge--dim">Dismissed</span>`,
+    }[a.status]??'';
+    const fd = iso => iso?new Date(iso).toLocaleDateString('en-US',{month:'short',day:'numeric',year:'numeric'}):'';
+    const ft = iso => iso?new Date(iso).toLocaleString('en-US',{month:'short',day:'numeric',hour:'2-digit',minute:'2-digit'}):'';
+    const firedLine = a.triggered_at
+        ? `<div class="alert-card__fired">⚡ Triggered ${ft(a.triggered_at)}${a.triggered_value!=null?' &nbsp;·&nbsp; value: <strong style="color:var(--text-primary)">'+a.triggered_value+'</strong>':''}</div>` : '';
+    const meta = [
+        `<span>Created ${fd(a.created_at)}</span>`,
+        a.last_checked?`<span>Checked ${ft(a.last_checked)}</span>`:'',
+        a.expires_at?`<span>Expires ${fd(a.expires_at)}</span>`:'',
+        a.repeat?`<span style="color:var(--blue)">↺ re-arms</span>`:'',
+        a.notes?`<span class="alert-card__notes">"${a.notes}"</span>`:'',
+    ].filter(Boolean).join('<span class="alert-meta-sep">·</span>');
+    const isActive=a.status==='active', isPaused=a.status==='paused', isTrig=a.status==='triggered';
+    return `<div class="alert-card" style="--alert-color:${pColor}">
+        <div class="alert-card__bar" style="background:${pColor}"></div>
+        <div class="alert-card__body">
+            <div class="alert-card__top">
+                <div class="alert-card__left">
+                    <span class="alert-card__ticker">${a.ticker}</span>
+                    <span class="alert-card__cond">${condLabel}</span>
+                    ${a.label?`<span class="alert-card__label">${a.label}</span>`:''}
+                </div>
+                <div class="alert-card__right">
+                    <span class="priority-badge priority-badge--${a.priority}">${a.priority.charAt(0).toUpperCase()+a.priority.slice(1)}</span>
+                    ${statusBadge}
+                </div>
+            </div>
+            ${firedLine}
+            <div class="alert-card__meta">${meta}</div>
+            <div class="alert-card__actions">
+                ${isTrig?`<button class="alert-action-btn alert-action-btn--green" onclick="dismissAlert(${a.id})">✓ Dismiss</button>`:''}
+                ${(isActive||isPaused)?`<button class="alert-action-btn alert-action-btn--dim" onclick="toggleAlert(${a.id})">${isPaused?'▶ Resume':'⏸ Pause'}</button>`:''}
+                <button class="alert-action-btn alert-action-btn--red" onclick="deleteAlert(${a.id})">✕ Delete</button>
+            </div>
+        </div>
+    </div>`;
+}
+
+/* actions */
+async function checkAllAlerts() {
+    const btn=document.getElementById('check-btn'), statusEl=document.getElementById('alert-check-status');
+    btn.disabled=true; btn.textContent='⟳ Checking…';
+    statusEl.innerHTML='<span style="color:var(--text-sec)">Fetching live market data…</span>';
+    document.getElementById('alerts-loading').style.display='flex';
+    try {
+        const d = await fetch('/api/alerts/check',{method:'POST'}).then(r=>r.json());
+        document.getElementById('alerts-loading').style.display='none';
+        const col = d.triggered>0?'var(--orange)':'var(--green)';
+        statusEl.innerHTML=`<span style="color:${col}">Checked ${d.checked} alert${d.checked!==1?'s':''} · ${d.triggered>0?`⚡ ${d.triggered} triggered`:'✓ None triggered'}</span><span style="color:var(--text-dim)"> — ${new Date().toLocaleTimeString()}</span>`;
+        loadAlerts();
+    } catch(e) {
+        document.getElementById('alerts-loading').style.display='none';
+        statusEl.innerHTML=`<span style="color:var(--red)">Check failed: ${e}</span>`;
+    }
+    btn.disabled=false; btn.textContent='⟳ Check Now';
+}
+async function deleteAlert(id)  { if(!confirm('Delete this alert?'))return; await fetch(`/api/alerts/${id}`,{method:'DELETE'}); loadAlerts(); }
+async function toggleAlert(id)  { await fetch(`/api/alerts/${id}/toggle`,{method:'PUT'}); loadAlerts(); }
+async function dismissAlert(id) { await fetch(`/api/alerts/${id}/dismiss`,{method:'PUT'}); loadAlerts(); }
+
+/* drawer */
+function openCreateAlert() {
+    document.getElementById('alert-drawer').classList.add('open');
+    document.getElementById('alert-drawer-overlay').classList.add('open');
+    setTimeout(()=>document.getElementById('al-ticker').focus(),120);
+}
+function closeCreateAlert() {
+    document.getElementById('alert-drawer').classList.remove('open');
+    document.getElementById('alert-drawer-overlay').classList.remove('open');
+}
+function updateAlertForm() {
+    const cond=document.getElementById('al-condition').value;
+    const tg=document.getElementById('al-threshold-group'), lbl=document.getElementById('al-threshold-label'), inp=document.getElementById('al-threshold');
+    if(NEEDS_THRESHOLD.has(cond)){
+        tg.style.display=''; lbl.textContent=(THRESHOLD_LABEL[cond]||'Threshold')+' *';
+        if(!inp.value&&THRESHOLD_DEFAULT[cond]) inp.value=THRESHOLD_DEFAULT[cond];
+    } else { tg.style.display='none'; }
+}
+async function submitAlert() {
+    const errEl=document.getElementById('al-error'); errEl.style.display='none';
+    const ticker=document.getElementById('al-ticker').value.toUpperCase().trim();
+    const condition_type=document.getElementById('al-condition').value;
+    const threshold=NEEDS_THRESHOLD.has(condition_type)?parseFloat(document.getElementById('al-threshold').value):null;
+    const priority=document.querySelector('input[name=al-priority]:checked')?.value||'medium';
+    const label=document.getElementById('al-label').value.trim();
+    const notes=document.getElementById('al-notes').value.trim();
+    const repeat=document.getElementById('al-repeat').checked;
+    const expires_at=document.getElementById('al-expires').value||null;
+    if(!ticker){showAlErr('Enter a ticker symbol.');return;}
+    if(NEEDS_THRESHOLD.has(condition_type)&&isNaN(threshold)){showAlErr('Enter a valid threshold.');return;}
+    const res=await fetch('/api/alerts',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({ticker,condition_type,threshold,priority,label,notes,repeat,expires_at})});
+    if(res.ok){
+        closeCreateAlert();
+        ['al-ticker','al-label','al-threshold','al-notes','al-expires'].forEach(id=>document.getElementById(id).value='');
+        document.getElementById('al-repeat').checked=false;
+        document.querySelector('input[name=al-priority][value=medium]').checked=true;
+        loadAlerts();
+    } else { const err=await res.json(); showAlErr(err.error||'Failed to create alert.'); }
+}
+function showAlErr(msg){const el=document.getElementById('al-error');el.textContent=msg;el.style.display='';}
+
+/* ═══════════════════════════════════════
+   QUICK SETUP — render
+   ═══════════════════════════════════════ */
+
+function renderQuickSetup() {
+    /* Bundle cards */
+    document.getElementById('bundle-grid').innerHTML = QS_BUNDLES.map(b => {
+        const sel = b.tickers.every(t=>_qsTickers.has(t)) && b.conds.every(c=>_qsConds.has(c));
+        return `<div class="bundle-card ${sel?'selected':''}" onclick="toggleBundle('${b.id}')" style="--bc:${b.color}">
+            <div class="bundle-card__top">
+                <span class="bundle-card__icon">${b.icon}</span>
+                <div>
+                    <div class="bundle-card__name">${b.label}</div>
+                    <div class="bundle-card__desc">${b.desc}</div>
+                </div>
+                ${sel?`<span class="bundle-card__check">✓</span>`:''}
+            </div>
+            <div class="bundle-card__tickers">
+                ${b.tickers.map(t=>`<span class="bundle-ticker-chip ${_qsTickers.has(t)?'sel':''}">${t}</span>`).join('')}
+            </div>
+            <div class="bundle-card__conds">
+                ${b.conds.map(cid=>{const c=QS_CONDS.find(x=>x.id===cid);return c?`<span>${c.icon} ${c.label}</span>`:''}).join('')}
+            </div>
+        </div>`;
+    }).join('');
+
+    /* Asset groups */
+    document.getElementById('asset-groups').innerHTML = ASSET_GROUPS.map(g => `
+        <div class="asset-group-row">
+            <div class="asset-group-header">
+                <span class="asset-group-label" style="color:${g.color}">${g.icon} ${g.label}</span>
+                <button class="asset-group-selall" onclick="qsSelectGroup('${g.id}')">
+                    ${g.assets.every(a=>_qsTickers.has(a.t))?'Deselect all':'Select all'}
+                </button>
+            </div>
+            <div class="asset-chip-row">
+                ${g.assets.map(a=>`
+                    <div class="asset-chip ${_qsTickers.has(a.t)?'selected':''}"
+                         onclick="qsToggleAsset('${a.t}')"
+                         style="--ac:${g.color}"
+                         title="${a.n} · ${a.tier} volatility">
+                        <span class="asset-chip__ticker">${a.t}</span>
+                        <span class="asset-chip__name">${a.n}</span>
+                        <span class="asset-chip__tier tier-${a.tier}">${_tierLabel(a.tier)}</span>
+                    </div>`).join('')}
+            </div>
+        </div>`).join('');
+
+    /* Condition toggles */
+    document.getElementById('cond-grid').innerHTML = QS_CONDS.map(c => `
+        <div class="cond-card ${_qsConds.has(c.id)?'active':''}"
+             onclick="qsToggleCond('${c.id}')"
+             style="--cc:${_condColor(c.id)}">
+            <div class="cond-card__icon">${c.icon}</div>
+            <div class="cond-card__label">${c.label}</div>
+            <div class="cond-card__desc">${c.desc}</div>
+            ${c.hasTh?`<div class="cond-card__th-hint">${_condThHint(c)}</div>`:''}
+        </div>`).join('');
+
+    /* Show threshold config row if any threshold-needing condition selected */
+    const hasPct = _qsConds.has('pct_up')||_qsConds.has('pct_dn');
+    const hasRsi = _qsConds.has('rsi_ob')||_qsConds.has('rsi_os');
+    const hasVol = _qsConds.has('vol_spike');
+    const anyTh  = hasPct||hasRsi||hasVol;
+    const smart  = document.getElementById('qs-smart').checked;
+    document.getElementById('qs-threshold-row').style.display = anyTh ? '' : 'none';
+    document.getElementById('qs-manual-pct').style.display = (hasPct && !smart) ? 'flex' : 'none';
+    document.getElementById('qs-rsi-row').style.display    = hasRsi ? 'flex' : 'none';
+    document.getElementById('qs-vol-row').style.display    = hasVol ? 'flex' : 'none';
+
+    /* Ticker count */
+    document.getElementById('qs-ticker-count').textContent = `${_qsTickers.size} selected`;
+
+    qsUpdatePreview();
+}
+
+function _tierLabel(tier) {
+    return {low:'·',medium:'··',high:'···',very_high:'····'}[tier]||'';
+}
+function _condColor(id) {
+    const map = {pct_up:'var(--green)',pct_dn:'var(--red)',rsi_ob:'var(--red)',rsi_os:'var(--green)',
+                 macd_bull:'var(--cyan)',macd_bear:'var(--orange)',sma200_up:'var(--gold)',sma200_dn:'var(--red)',
+                 h52:'var(--cyan)',l52:'var(--red)',vol_spike:'var(--purple)',bb_up:'var(--blue)',bb_dn:'var(--orange)',
+                 sma50_up:'var(--blue)',sma50_dn:'var(--orange)'};
+    return map[id]||'var(--text-sec)';
+}
+function _condThHint(c) {
+    const smart = document.getElementById('qs-smart')?.checked !== false;
+    if (c.thKey === 'pct') return smart ? 'smart %' : `${_qsPctVal(c.id)}%`;
+    if (c.thKey === 'rsi_hi') return `≥ ${document.getElementById('qs-rsi-hi')?.value||70}`;
+    if (c.thKey === 'rsi_lo') return `≤ ${document.getElementById('qs-rsi-lo')?.value||30}`;
+    if (c.thKey === 'vol') return `${document.getElementById('qs-vol')?.value||2}×`;
+    return '';
+}
+function _qsPctVal(condId) {
+    if (condId==='pct_up') return parseFloat(document.getElementById('qs-pct-up')?.value)||3;
+    return parseFloat(document.getElementById('qs-pct-dn')?.value)||3;
+}
+
+/* ── interactions ── */
+function toggleBundle(bid) {
+    const b = QS_BUNDLES.find(x=>x.id===bid);
+    if (!b) return;
+    const allSel = b.tickers.every(t=>_qsTickers.has(t)) && b.conds.every(c=>_qsConds.has(c));
+    if (allSel) {
+        b.tickers.forEach(t=>_qsTickers.delete(t));
+        b.conds.forEach(c=>_qsConds.delete(c));
+    } else {
+        b.tickers.forEach(t=>_qsTickers.add(t));
+        b.conds.forEach(c=>_qsConds.add(c));
+    }
+    renderQuickSetup();
+}
+
+function qsToggleAsset(ticker) {
+    if (_qsTickers.has(ticker)) _qsTickers.delete(ticker);
+    else _qsTickers.add(ticker);
+    renderQuickSetup();
+}
+
+function qsSelectGroup(gid) {
+    const g = ASSET_GROUPS.find(x=>x.id===gid);
+    if (!g) return;
+    const allSel = g.assets.every(a=>_qsTickers.has(a.t));
+    g.assets.forEach(a => allSel ? _qsTickers.delete(a.t) : _qsTickers.add(a.t));
+    renderQuickSetup();
+}
+
+function qsClearTickers() { _qsTickers.clear(); renderQuickSetup(); }
+
+function qsToggleCond(cid) {
+    if (_qsConds.has(cid)) _qsConds.delete(cid);
+    else _qsConds.add(cid);
+    renderQuickSetup();
+}
+
+function qsUpdateThresholds() {
+    const smart = document.getElementById('qs-smart').checked;
+    const hasPct = _qsConds.has('pct_up')||_qsConds.has('pct_dn');
+    document.getElementById('qs-manual-pct').style.display = (hasPct && !smart) ? 'flex' : 'none';
+    qsUpdatePreview();
+}
+
+function qsUpdatePreview() {
+    const n = _qsTickers.size * _qsConds.size;
+    const btn = document.getElementById('qs-create-btn');
+    const lbl = document.getElementById('qs-count');
+    lbl.textContent = n > 0 ? `${n} alert${n!==1?'s':''} to create` : 'Select assets and conditions';
+    btn.disabled = n === 0;
+}
+
+function _getThreshold(condId, ticker) {
+    const c = QS_CONDS.find(x=>x.id===condId);
+    if (!c || !c.hasTh) return null;
+    const smart = document.getElementById('qs-smart').checked;
+    if (c.thKey === 'pct') {
+        if (smart) {
+            const tier = TICKER_META[ticker]?.tier || 'medium';
+            return TIER_PCT[tier];
+        }
+        return condId === 'pct_up'
+            ? (parseFloat(document.getElementById('qs-pct-up').value)||3)
+            : (parseFloat(document.getElementById('qs-pct-dn').value)||3);
+    }
+    if (c.thKey === 'rsi_hi') return parseFloat(document.getElementById('qs-rsi-hi').value)||70;
+    if (c.thKey === 'rsi_lo') return parseFloat(document.getElementById('qs-rsi-lo').value)||30;
+    if (c.thKey === 'vol')    return parseFloat(document.getElementById('qs-vol').value)||2;
+    return null;
+}
+
+async function createQuickAlerts() {
+    const priority = document.querySelector('input[name=qs-priority]:checked')?.value || 'medium';
+    const smart    = document.getElementById('qs-smart').checked;
+    const alertItems = [];
+
+    _qsTickers.forEach(ticker => {
+        _qsConds.forEach(condId => {
+            const c = QS_CONDS.find(x=>x.id===condId);
+            if (!c) return;
+            const threshold = _getThreshold(condId, ticker);
+            const meta = TICKER_META[ticker];
+            const thLabel = threshold != null
+                ? (c.thKey==='pct' && smart ? ` (${TIER_PCT[meta?.tier||'medium']}% smart)` : '')
+                : '';
+            alertItems.push({
+                ticker,
+                condition_type: c.cond,
+                threshold,
+                priority,
+                label: `[Quick Setup] ${meta?.name||ticker} — ${c.label}${thLabel}`,
+            });
+        });
+    });
+
+    if (!alertItems.length) return;
+    const btn = document.getElementById('qs-create-btn');
+    btn.disabled = true; btn.textContent = 'Creating…';
+    try {
+        const res = await fetch('/api/alerts/bulk', {
+            method: 'POST',
+            headers: {'Content-Type':'application/json'},
+            body: JSON.stringify({ alerts: alertItems }),
+        });
+        const d = await res.json();
+        // Switch back to My Alerts and show result
+        setMainTab('list', document.getElementById('main-tab-list'));
+        const statusEl = document.getElementById('alert-check-status');
+        statusEl.innerHTML = `<span style="color:var(--green)">⚡ Created ${d.created} alert${d.created!==1?'s':''}${d.skipped?` · ${d.skipped} skipped (already exist)`:''}</span>`;
+        _qsTickers.clear(); _qsConds.clear();
+        loadAlerts();
+    } catch(e) {
+        alert('Failed to create alerts: ' + e);
+    }
+    btn.disabled = false; btn.textContent = '⚡ Create Alerts';
+}
+
+/* ═══════════════════════════════════════
+   BOOT
+   ═══════════════════════════════════════ */
+document.addEventListener('DOMContentLoaded', async () => {
+    updateAlertForm();
+    document.getElementById('al-ticker').addEventListener('input', e => {
+        e.target.value = e.target.value.toUpperCase();
+    });
+
+    renderQuickSetup();
+    await loadAlerts();
+
+    /* silent auto-check on load */
+    if (_allAlerts.some(a => a.status==='active')) {
+        const statusEl = document.getElementById('alert-check-status');
+        statusEl.innerHTML = '<span style="color:var(--text-dim)">Auto-checking active alerts…</span>';
+        try {
+            const d = await fetch('/api/alerts/check',{method:'POST'}).then(r=>r.json());
+            if (d.triggered > 0) {
+                statusEl.innerHTML = `<span style="color:var(--orange)">⚡ ${d.triggered} alert${d.triggered!==1?'s':''} triggered — see below</span>`;
+                loadAlerts();
+            } else {
+                statusEl.innerHTML = `<span style="color:var(--text-dim)">✓ All clear — ${d.checked} alert${d.checked!==1?'s':''} checked · ${new Date().toLocaleTimeString()}</span>`;
+            }
+        } catch(_){}
+    }
+});
+</script>
+{% endblock %}

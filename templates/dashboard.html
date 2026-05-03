@@ -1,0 +1,153 @@
+{% extends "base.html" %}
+{% block title %}Dashboard — SwiftClarity Terminal™{% endblock %}
+{% block content %}
+<div class="home-hero" style="background-image: url('{{ url_for('static', filename='images/paralux_theme.png') }}');">
+    <div class="home-hero__overlay"></div>
+    <div class="home-hero__scan"></div>
+    <div class="home-hero__corner home-hero__corner--tl"></div>
+    <div class="home-hero__corner home-hero__corner--tr"></div>
+    <div class="home-hero__corner home-hero__corner--bl"></div>
+    <div class="home-hero__corner home-hero__corner--br"></div>
+    <div class="home-hero__content">
+    <img src="{{ url_for('static', filename='images/paralux_logo.png') }}" alt="Paralux" class="home-hero__logo">
+    <div class="home-hero__title">SwiftClarity Terminal™</div>
+    <div class="home-hero__sub">Financial Analysis Dashboard · Welcome back, {{ current_user.username }}</div>
+    <div class="home-modules">
+        <a href="{{ url_for('economic') }}" class="home-module">
+            <div class="home-module__name" style="color:var(--red)">Economic Data</div>
+            <div class="home-module__desc">FRED macro indicators</div>
+        </a>
+        <a href="{{ url_for('technical') }}" class="home-module">
+            <div class="home-module__name" style="color:var(--blue)">Technical</div>
+            <div class="home-module__desc">SMA · MACD · BB · Stoch</div>
+        </a>
+        <a href="{{ url_for('fundamentals') }}" class="home-module">
+            <div class="home-module__name" style="color:var(--gold)">Fundamentals</div>
+            <div class="home-module__desc">SEC XBRL · Ratios</div>
+        </a>
+        <a href="{{ url_for('correlation') }}" class="home-module">
+            <div class="home-module__name" style="color:var(--orange)">Correlation</div>
+            <div class="home-module__desc">Return heatmap</div>
+        </a>
+        <a href="{{ url_for('news') }}" class="home-module">
+            <div class="home-module__name" style="color:var(--purple)">News & Sentiment</div>
+            <div class="home-module__desc">LLM-powered feed</div>
+        </a>
+    </div>
+    </div><!-- end home-hero__content -->
+</div><!-- end home-hero -->
+
+<div class="dashboard-grid">
+    <div class="card">
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:14px">
+            <div class="card__title" style="margin-bottom:0">Watchlist</div>
+            <span style="font-size:11px;color:var(--text-dim)" id="wl-count"></span>
+        </div>
+        <div class="wl-add-row">
+            <input type="text" id="wl-input" placeholder="Add ticker (e.g. AAPL)" maxlength="6"
+                   onkeydown="if(event.key==='Enter')wlAdd()">
+            <button class="btn btn--sm btn--secondary" onclick="wlAdd()">+ Add</button>
+        </div>
+        <div id="watchlist-container">
+            <div class="loading"><div class="spinner"></div> Loading prices...</div>
+        </div>
+    </div>
+    <div class="card">
+        <div class="card__title">Recent Searches</div>
+        {% if history %}
+        <div style="font-size:13px">
+            {% for h in history %}
+            <div style="display:flex;justify-content:space-between;padding:8px 0;border-bottom:1px solid var(--border)">
+                <span><strong style="font-family:var(--mono)">{{ h.ticker }}</strong> <span style="color:var(--text-dim)">·</span> {{ h.module }}</span>
+                <span style="color:var(--text-dim);font-size:11px">{{ h.searched_at.strftime('%b %d %H:%M') }}</span>
+            </div>
+            {% endfor %}
+        </div>
+        {% else %}
+        <div class="empty-state">
+            <div class="empty-state__icon">📊</div>
+            <div class="empty-state__text">No recent searches yet. Start exploring!</div>
+        </div>
+        {% endif %}
+    </div>
+</div>
+
+<script>
+function fmtVol(v) {
+    if (v == null) return '—';
+    if (v >= 1e9) return (v/1e9).toFixed(2) + 'B';
+    if (v >= 1e6) return (v/1e6).toFixed(2) + 'M';
+    if (v >= 1e3) return (v/1e3).toFixed(0) + 'K';
+    return String(v);
+}
+
+function loadWatchlist() {
+    fetch('/api/watchlist-prices')
+        .then(r => r.json())
+        .then(data => {
+            const c = document.getElementById('watchlist-container');
+            const cnt = document.getElementById('wl-count');
+            if (!data.length) {
+                cnt.textContent = '';
+                c.innerHTML = '<div class="empty-state"><div class="empty-state__text">No tickers yet — add one above.</div></div>';
+                return;
+            }
+            cnt.textContent = data.length + '/15';
+            let html = '';
+            data.forEach(d => {
+                const hasPrice = d.close != null;
+                const up = d.pct >= 0;
+                const color = hasPrice ? (up ? 'var(--green)' : 'var(--red)') : 'var(--text-dim)';
+                const arrow = up ? '▲' : '▼';
+                const priceHtml = hasPrice
+                    ? `<div class="wl-price-main">$${d.close.toFixed(2)}</div>
+                       <div class="wl-price-chg" style="color:${color}">${arrow} ${Math.abs(d.pct).toFixed(2)}%</div>`
+                    : `<div class="wl-na">unavailable</div>`;
+                const statsHtml = hasPrice
+                    ? `H&nbsp;$${d.high.toFixed(2)}&nbsp;&nbsp;L&nbsp;$${d.low.toFixed(2)}&nbsp;&nbsp;Vol&nbsp;${fmtVol(d.volume)}`
+                    : '';
+                html += `<div class="wl-row">
+                    <div class="wl-ticker">${d.ticker}</div>
+                    <div class="wl-stats">${statsHtml}</div>
+                    <div class="wl-price">${priceHtml}</div>
+                    <button class="wl-remove" onclick="wlRemove('${d.ticker}')" title="Remove">×</button>
+                </div>`;
+            });
+            c.innerHTML = html;
+        })
+        .catch(() => {
+            document.getElementById('watchlist-container').innerHTML =
+                '<div class="empty-state"><div class="empty-state__text">Could not load prices.</div></div>';
+        });
+}
+
+function wlAdd() {
+    const input = document.getElementById('wl-input');
+    const ticker = input.value.trim().toUpperCase();
+    if (!ticker) return;
+    fetch('/api/watchlist/add', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({ticker})
+    })
+    .then(r => r.json())
+    .then(d => {
+        if (d.error) { alert(d.error); return; }
+        input.value = '';
+        loadWatchlist();
+    });
+}
+
+function wlRemove(ticker) {
+    fetch('/api/watchlist/remove', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({ticker})
+    })
+    .then(r => r.json())
+    .then(() => loadWatchlist());
+}
+
+loadWatchlist();
+</script>
+{% endblock %}

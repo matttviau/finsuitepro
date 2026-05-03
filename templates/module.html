@@ -1,0 +1,886 @@
+{% extends "base.html" %}
+{% block title %}
+{% if module == 'technical' %}Technical Analysis{% elif module == 'fundamentals' %}SEC Fundamentals{% elif module == 'correlation' %}Correlation Matrix{% elif module == 'economic' %}Economic Data{% elif module == 'news' %}News & Sentiment{% elif module == 'signal' %}Signal Analysis{% elif module == 'listings' %}Listings Explorer{% endif %} — FinSuite Pro™
+{% endblock %}
+
+{% block content %}
+<!-- ═══════════════ TECHNICAL ANALYSIS ═══════════════ -->
+{% if module == 'technical' %}
+<div class="module-header">
+    <span class="module-header__dot" style="color:var(--blue)">●</span>
+    <span class="module-header__title">Technical Analysis</span>
+    <span class="module-header__sub">Advanced charting — candlestick, OHLC, line, point & figure</span>
+    <span class="module-header__tag" style="background:var(--blue)">TECH</span>
+    <button class="help-btn" onclick="showHelp('technical')" title="Help & Instructions">? Help</button>
+</div>
+
+<!-- ── Controls ── -->
+<div class="controls">
+    <!-- Row 1: Symbol + Interval + Quick tickers -->
+    <div class="controls__row">
+        <span class="controls__label">Symbol</span>
+        <input type="text" id="ticker" class="controls__input" placeholder="AAPL" maxlength="10"
+               onkeydown="if(event.key==='Enter')runTech()">
+        <button class="btn btn--primary btn--sm" onclick="runTech()">▶ Run Analysis</button>
+        <button class="btn btn--sm" onclick="resetTech()" style="color:var(--text-dim);border-color:var(--border);background:transparent">↺ Reset</button>
+        <div class="controls__sep"></div>
+        <span class="controls__label">Interval</span>
+        <div class="ta-interval-group" id="taIntervalGroup">
+            <button class="ta-interval-btn active" data-interval="1d"  onclick="setTechInterval(this)">1D</button>
+            <button class="ta-interval-btn"        data-interval="4h"  onclick="setTechInterval(this)">4H</button>
+            <button class="ta-interval-btn"        data-interval="1h"  onclick="setTechInterval(this)">1H</button>
+            <button class="ta-interval-btn"        data-interval="30m" onclick="setTechInterval(this)">30m</button>
+            <button class="ta-interval-btn"        data-interval="15m" onclick="setTechInterval(this)">15m</button>
+            <button class="ta-interval-btn"        data-interval="5m"  onclick="setTechInterval(this)">5m</button>
+            <button class="ta-interval-btn"        data-interval="1m"  onclick="setTechInterval(this)">1m</button>
+        </div>
+        <div class="controls__sep"></div>
+        <span class="controls__label">Quick</span>
+        {% for s in ['AAPL','MSFT','TSLA','SPY','NVDA','AMZN','BTC-USD'] %}
+        <button class="quick-btn" onclick="document.getElementById('ticker').value='{{s}}';runTech()">{{s}}</button>
+        {% endfor %}
+    </div>
+    <!-- Row 2: Period buttons (swapped dynamically by setTechInterval) -->
+    <div class="controls__row" id="taPeriodRow" style="margin-top:6px;gap:6px;align-items:center;flex-wrap:wrap">
+        <span class="controls__label">Period</span>
+        <div id="taPeriodBtns" style="display:flex;gap:4px;flex-wrap:wrap">
+            <!-- Daily period buttons (default) -->
+            <button class="period-btn" data-period="3M"     onclick="setPeriod(this,'tech')">3M</button>
+            <button class="period-btn" data-period="6M"     onclick="setPeriod(this,'tech')">6M</button>
+            <button class="period-btn" data-period="YTD"    onclick="setPeriod(this,'tech')">YTD</button>
+            <button class="period-btn active" data-period="1Y" onclick="setPeriod(this,'tech')">1Y</button>
+            <button class="period-btn" data-period="3Y"     onclick="setPeriod(this,'tech')">3Y</button>
+            <button class="period-btn" data-period="5Y"     onclick="setPeriod(this,'tech')">5Y</button>
+            <button class="period-btn" data-period="10Y"    onclick="setPeriod(this,'tech')">10Y</button>
+            <button class="period-btn" data-period="MAX"    onclick="setPeriod(this,'tech')">MAX</button>
+            <button class="period-btn" data-period="CUSTOM" onclick="setPeriod(this,'tech')">Custom ▾</button>
+        </div>
+        <span class="ta-interval-hint" id="taIntervalHint" style="display:none"></span>
+    </div>
+    <!-- Custom date range row — shown only when "Custom" period is selected -->
+    <div id="ta-custom-range" class="controls__row" style="display:none;margin-top:8px;gap:8px;align-items:center;flex-wrap:wrap">
+        <span class="controls__label">From</span>
+        <input type="date" id="ta-from" class="form-control" style="width:145px;font-size:13px">
+        <span class="controls__label">To</span>
+        <input type="date" id="ta-to" class="form-control" style="width:145px;font-size:13px">
+        <button class="btn btn--primary btn--sm" onclick="applyCustomRange()">Apply Range</button>
+        <span style="font-size:11px;color:var(--text-dim)">Full history is fetched — range applies instantly without a new API call.</span>
+    </div>
+</div>
+
+<div id="tech-status" class="ta-status-bar" style="display:none"></div>
+<div id="tech-loading" class="loading" style="display:none"><div class="spinner"></div> Fetching market data…</div>
+
+<div id="tech-content" style="display:none">
+    <!-- Stats grid — visible in all views -->
+    <div id="stats-grid" class="stats-grid"></div>
+
+    <!-- View tab switcher -->
+    <div class="ta-view-tabs">
+        <button class="ta-view-btn active" data-view="chart" onclick="switchTaView('chart',this)">
+            📈 Chart
+        </button>
+        <button class="ta-view-btn" data-view="moredata" onclick="switchTaView('moredata',this)">
+            🗂 More Data
+        </button>
+    </div>
+
+    <!-- ── Chart view ── -->
+    <div id="ta-view-chart">
+
+    <!-- Chart configurator panel -->
+    <div class="ta-config-panel">
+        <!-- Chart type row -->
+        <div class="ta-config-row">
+            <span class="ta-config-label">Chart Type</span>
+            <div class="ta-ctype-group" id="ctypeGroup">
+                <button class="ta-ctype-btn active" data-type="candlestick" onclick="setChartType(this)">
+                    <span class="ta-ctype-icon">🕯</span> Candlestick
+                </button>
+                <button class="ta-ctype-btn" data-type="ohlc" onclick="setChartType(this)">
+                    <span class="ta-ctype-icon">📊</span> OHLC Bar
+                </button>
+                <button class="ta-ctype-btn" data-type="line" onclick="setChartType(this)">
+                    <span class="ta-ctype-icon">📈</span> Line
+                </button>
+                <button class="ta-ctype-btn" data-type="area" onclick="setChartType(this)">
+                    <span class="ta-ctype-icon">🏔</span> Area
+                </button>
+                <button class="ta-ctype-btn ta-ctype-pnf" data-type="pnf" onclick="setChartType(this)">
+                    <span class="ta-ctype-icon">✕○</span> Point & Figure
+                </button>
+            </div>
+        </div>
+
+        <!-- P&F options (shown only for P&F) -->
+        <div class="ta-config-row ta-pnf-opts" id="pnfOpts" style="display:none">
+            <span class="ta-config-label">P&F Settings</span>
+            <div class="ta-pnf-selects">
+                <label class="ta-pnf-label">Box Size
+                    <select id="pnfBoxPct" class="ta-pnf-select" onchange="buildTAChart()">
+                        <option value="0.25">0.25%</option>
+                        <option value="0.5">0.5%</option>
+                        <option value="1" selected>1%</option>
+                        <option value="2">2%</option>
+                        <option value="3">3%</option>
+                    </select>
+                </label>
+                <label class="ta-pnf-label">Reversal
+                    <select id="pnfReversal" class="ta-pnf-select" onchange="buildTAChart()">
+                        <option value="1">1 box</option>
+                        <option value="2">2 boxes</option>
+                        <option value="3" selected>3 boxes</option>
+                        <option value="5">5 boxes</option>
+                    </select>
+                </label>
+            </div>
+        </div>
+
+        <!-- Overlay indicators (hidden for P&F) -->
+        <div class="ta-config-row" id="overlayRow">
+            <span class="ta-config-label">Overlays</span>
+            <div class="ta-toggle-group">
+                <button class="ta-ind-btn" data-ind="sma20"  onclick="toggleOverlay(this)" style="--ic:#7DD3FC">SMA 20</button>
+                <button class="ta-ind-btn active" data-ind="sma50"  onclick="toggleOverlay(this)" style="--ic:#FFB347">SMA 50</button>
+                <button class="ta-ind-btn" data-ind="sma200" onclick="toggleOverlay(this)" style="--ic:#FF6B6B">SMA 200</button>
+                <button class="ta-ind-btn" data-ind="ema9"   onclick="toggleOverlay(this)" style="--ic:#A8FF9F">EMA 9</button>
+                <button class="ta-ind-btn" data-ind="ema20"  onclick="toggleOverlay(this)" style="--ic:#00BF96">EMA 20</button>
+                <button class="ta-ind-btn active" data-ind="bb" onclick="toggleOverlay(this)" style="--ic:#B06EFF">Bollinger Bands</button>
+                <button class="ta-ind-btn" data-ind="vwap"   onclick="toggleOverlay(this)" style="--ic:#FF7B54">VWAP (20d)</button>
+            </div>
+        </div>
+
+        <!-- Oscillator panels (hidden for P&F) -->
+        <div class="ta-config-row" id="panelRow">
+            <span class="ta-config-label">Panels</span>
+            <div class="ta-toggle-group">
+                <button class="ta-ind-btn active" data-panel="volume" onclick="togglePanel(this)" style="--ic:#4DA6FF">Volume</button>
+                <button class="ta-ind-btn active" data-panel="rsi"    onclick="togglePanel(this)" style="--ic:#00D4AA">RSI (14)</button>
+                <button class="ta-ind-btn active" data-panel="macd"   onclick="togglePanel(this)" style="--ic:#00D4AA">MACD</button>
+                <button class="ta-ind-btn" data-panel="stoch"  onclick="togglePanel(this)" style="--ic:#FF7B54">Stochastic</button>
+                <button class="ta-ind-btn" data-panel="obv"    onclick="togglePanel(this)" style="--ic:#00BF96">OBV</button>
+                <button class="ta-ind-btn" data-panel="atr"    onclick="togglePanel(this)" style="--ic:#FFB347">ATR (14)</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Drawing toolbar -->
+    <div class="draw-toolbar" id="drawToolbar">
+        <span class="draw-toolbar__label">Drawing Tools</span>
+        <button class="draw-tool-btn" id="drawBtnH" onclick="activateDrawTool('horizontal')" title="Horizontal Line">
+            <svg width="16" height="16" viewBox="0 0 16 16"><line x1="1" y1="8" x2="15" y2="8" stroke="currentColor" stroke-width="2"/></svg>
+            Horizontal
+        </button>
+        <button class="draw-tool-btn" id="drawBtnV" onclick="activateDrawTool('vertical')" title="Vertical Line">
+            <svg width="16" height="16" viewBox="0 0 16 16"><line x1="8" y1="1" x2="8" y2="15" stroke="currentColor" stroke-width="2"/></svg>
+            Vertical
+        </button>
+        <button class="draw-tool-btn draw-tool-btn--support" id="drawBtnS" onclick="activateDrawTool('support')" title="Support Level">
+            <svg width="16" height="16" viewBox="0 0 16 16"><line x1="1" y1="11" x2="15" y2="11" stroke="currentColor" stroke-width="2" stroke-dasharray="3,2"/></svg>
+            Support
+        </button>
+        <button class="draw-tool-btn draw-tool-btn--resistance" id="drawBtnR" onclick="activateDrawTool('resistance')" title="Resistance Level">
+            <svg width="16" height="16" viewBox="0 0 16 16"><line x1="1" y1="5" x2="15" y2="5" stroke="currentColor" stroke-width="2" stroke-dasharray="3,2"/></svg>
+            Resistance
+        </button>
+        <button class="draw-tool-btn draw-tool-btn--trendline" id="drawBtnTL" onclick="activateDrawTool('trendline')" title="Trend Line (two-click)">
+            <svg width="16" height="16" viewBox="0 0 16 16"><line x1="2" y1="13" x2="14" y2="3" stroke="currentColor" stroke-width="2" stroke-linecap="round"/><circle cx="2" cy="13" r="1.5" fill="currentColor"/><circle cx="14" cy="3" r="1.5" fill="currentColor"/></svg>
+            Trend Line
+        </button>
+        <div class="draw-toolbar__sep"></div>
+        <button class="draw-tool-btn draw-tool-btn--clear" onclick="clearDrawings()" title="Clear all drawings">
+            <svg width="16" height="16" viewBox="0 0 16 16"><path d="M3 3l10 10M13 3L3 13" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>
+            Clear All
+        </button>
+        <span class="draw-toolbar__hint" id="drawHint"></span>
+    </div>
+
+    <!-- Main Plotly chart -->
+    <div class="ta-chart-outer">
+        <div id="ta-plotly-chart" class="ta-plotly-div"></div>
+    </div>
+
+    <!-- Line label / trendline config dialog -->
+    <div class="draw-label-dialog" id="drawLabelDialog" style="display:none">
+        <div class="draw-label-inner">
+            <div class="draw-label-title" id="drawLabelTitle">Label this line</div>
+            <input class="draw-label-input" id="drawLabelInput" placeholder="e.g. Weekly Support 185.00" maxlength="80">
+
+            <!-- Trendline-specific options (hidden for other tools) -->
+            <div class="draw-tl-options" id="drawTLOptions" style="display:none">
+                <div class="draw-tl-info" id="drawTLInfo"></div>
+                <div class="draw-tl-toggles">
+                    <label class="draw-tl-toggle">
+                        <input type="checkbox" id="drawTLExtend" checked>
+                        <span class="draw-tl-toggle__label">Extend beyond anchors</span>
+                    </label>
+                    <label class="draw-tl-toggle">
+                        <input type="checkbox" id="drawTLRay">
+                        <span class="draw-tl-toggle__label">Ray (right only)</span>
+                    </label>
+                </div>
+                <div class="draw-tl-color-row">
+                    <span class="draw-tl-color-lbl">Line color</span>
+                    <div class="draw-tl-colors">
+                        <button class="draw-color-swatch active" data-color="#FFB020" style="background:#FFB020" onclick="selectTLColor(this,'#FFB020')" title="Gold"></button>
+                        <button class="draw-color-swatch" data-color="#00C0FF" style="background:#00C0FF" onclick="selectTLColor(this,'#00C0FF')" title="Cyan"></button>
+                        <button class="draw-color-swatch" data-color="#00D478" style="background:#00D478" onclick="selectTLColor(this,'#00D478')" title="Green"></button>
+                        <button class="draw-color-swatch" data-color="#FF3348" style="background:#FF3348" onclick="selectTLColor(this,'#FF3348')" title="Red"></button>
+                        <button class="draw-color-swatch" data-color="#8855FF" style="background:#8855FF" onclick="selectTLColor(this,'#8855FF')" title="Purple"></button>
+                        <button class="draw-color-swatch" data-color="#FF7830" style="background:#FF7830" onclick="selectTLColor(this,'#FF7830')" title="Orange"></button>
+                        <button class="draw-color-swatch" data-color="#E2F0FF" style="background:#E2F0FF" onclick="selectTLColor(this,'#E2F0FF')" title="White"></button>
+                    </div>
+                </div>
+            </div>
+
+            <div class="draw-label-row">
+                <button class="tj-btn tj-btn--ghost" onclick="cancelDrawLabel()">Cancel</button>
+                <button class="tj-btn tj-btn--primary" onclick="confirmDrawLabel()">Confirm</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Distribution chart (Chart.js) -->
+    <div class="ta-dist-section">
+        <div class="ta-dist-header">
+            <span class="ta-dist-title">Daily Return Distribution</span>
+            <span class="ta-dist-sub" id="distSubLabel"></span>
+        </div>
+        <div class="chart-wrap" style="height:280px;">
+            <canvas id="chart-dist"></canvas>
+        </div>
+    </div>
+
+    </div><!-- end #ta-view-chart -->
+
+    <!-- ── More Data view ── -->
+    <div id="ta-view-moredata" style="display:none">
+        <div id="moredata-loading" class="loading" style="display:none">
+            <div class="spinner"></div> Loading company data from Yahoo Finance…
+        </div>
+        <div id="moredata-content"></div>
+    </div>
+
+</div><!-- end #tech-content -->
+
+<!-- ═══════════════ FUNDAMENTALS ═══════════════ -->
+{% elif module == 'fundamentals' %}
+<div class="module-header">
+    <span class="module-header__dot" style="color:var(--gold)">●</span>
+    <span class="module-header__title">SEC Fundamentals</span>
+    <span class="module-header__sub">XBRL line item charting from SEC EDGAR filings</span>
+    <span class="module-header__tag" style="background:var(--gold)">FUND</span>
+    <button class="help-btn" onclick="showHelp('fundamentals')" title="Help & Instructions">? Help</button>
+</div>
+
+<!-- Ticker load bar -->
+<div class="controls">
+    <div class="controls__row">
+        <span class="controls__label">Symbol</span>
+        <input type="text" id="fund-ticker" class="controls__input" placeholder="AAPL" maxlength="6">
+        <button class="btn btn--primary btn--sm" onclick="runFund()">Load Data</button>
+        <button class="btn btn--sm" onclick="resetFund()" title="Clear results and reset view" style="color:var(--text-dim);border-color:var(--border);background:transparent">↺ Reset</button>
+        <div class="controls__sep"></div>
+        {% for s in ['AAPL','MSFT','AMZN','TSLA','GOOGL','NVDA'] %}
+        <button class="quick-btn" onclick="document.getElementById('fund-ticker').value='{{s}}';runFund()">{{s}}</button>
+        {% endfor %}
+    </div>
+</div>
+<div id="fund-status" style="font-size:13px;color:var(--text-sec);margin-bottom:12px"></div>
+<div id="fund-loading" class="loading" style="display:none"><div class="spinner"></div> Fetching XBRL data from SEC EDGAR…</div>
+
+<div id="fund-company-card" style="display:none">
+    <div class="fund-co-card">
+        <div class="fund-co-left">
+            <div class="fund-co-name" id="fund-co-name">—</div>
+            <div class="fund-co-meta" id="fund-co-meta"></div>
+        </div>
+        <div class="fund-co-desc" id="fund-co-desc"></div>
+        <a class="fund-co-link" id="fund-co-link" href="#" target="_blank" rel="noopener" style="display:none">
+            ↗ Website
+        </a>
+    </div>
+</div>
+
+<div id="fund-content" style="display:none">
+
+    <!-- ── Chart controls panel ── -->
+    <div class="card fund-panel">
+
+        <!-- Row 1: item selector + search -->
+        <div class="controls__row" style="flex-wrap:wrap;gap:8px">
+            <span class="controls__label">Line Item</span>
+            <select id="fund-item-select" class="form-control fund-select-primary"></select>
+            <span class="controls__label" style="margin-left:4px">Search</span>
+            <input type="text" id="fund-filter" class="form-control" style="width:200px;font-size:13px" placeholder="Filter items…" oninput="filterFundItems()">
+        </div>
+
+        <!-- Row 2: compare items (hidden until toggled) -->
+        <div class="controls__row fund-compare-row" id="fund-compare-row" style="display:none;flex-wrap:wrap;gap:8px">
+            <span class="controls__label">vs.</span>
+            <select id="fund-item-2" class="form-control" style="width:300px;font-size:13px"><option value="">— none —</option></select>
+            <select id="fund-item-3" class="form-control" style="width:300px;font-size:13px"><option value="">— none —</option></select>
+        </div>
+
+        <!-- Row 3: chart type / period / scale / run -->
+        <div class="controls__row" style="flex-wrap:wrap;gap:8px;margin-top:4px">
+            <span class="controls__label">Chart</span>
+            <button class="period-btn active" data-ctype="line"  onclick="setFundOpt('ctype','line',this)">Line</button>
+            <button class="period-btn"        data-ctype="bar"   onclick="setFundOpt('ctype','bar',this)">Bar</button>
+            <button class="period-btn"        data-ctype="area"  onclick="setFundOpt('ctype','area',this)">Area</button>
+            <div class="controls__sep"></div>
+            <span class="controls__label">Period</span>
+            <button class="period-btn active" data-cperiod="0"  onclick="setFundOpt('period',0,this)">All</button>
+            <button class="period-btn"        data-cperiod="10" onclick="setFundOpt('period',10,this)">10Y</button>
+            <button class="period-btn"        data-cperiod="5"  onclick="setFundOpt('period',5,this)">5Y</button>
+            <button class="period-btn"        data-cperiod="3"  onclick="setFundOpt('period',3,this)">3Y</button>
+            <div class="controls__sep"></div>
+            <span class="controls__label">Scale</span>
+            <button class="period-btn active" data-scale="auto" onclick="setFundOpt('scale','auto',this)">Auto</button>
+            <button class="period-btn"        data-scale="B"    onclick="setFundOpt('scale','B',this)">Billions</button>
+            <button class="period-btn"        data-scale="M"    onclick="setFundOpt('scale','M',this)">Millions</button>
+            <div class="controls__sep"></div>
+            <button class="btn btn--primary btn--sm" onclick="loadFundSeries()">&#9654; Chart</button>
+        </div>
+
+        <!-- Row 4: toggle options -->
+        <div class="controls__row fund-toggles" style="flex-wrap:wrap;gap:16px;margin-top:4px">
+            <label class="fund-toggle"><input type="checkbox" id="fund-trendline"> Trend Line</label>
+            <label class="fund-toggle"><input type="checkbox" id="fund-datalabels"> Data Labels</label>
+            <label class="fund-toggle"><input type="checkbox" id="fund-compare-mode" onchange="toggleFundCompare(this)"> Compare Items</label>
+        </div>
+    </div>
+
+    <!-- Chart -->
+    <div class="chart-wrap" style="height:500px;margin-top:14px"><div id="chart-fund-series" style="width:100%;height:100%"></div></div>
+
+    <!-- Stats row -->
+    <div id="fund-series-stats" style="display:none"></div>
+
+    <!-- ── Ratio Analysis ── -->
+    <div class="card" style="margin-top:18px">
+        <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:14px;flex-wrap:wrap;gap:8px">
+            <div>
+                <span style="font-size:14px;font-weight:700;color:var(--text-primary)">Ratio Analysis</span>
+                <span style="font-size:11px;color:var(--text-dim);margin-left:8px">Annual / TTM — dynamically resolves to each company's reported tags</span>
+            </div>
+            <button class="btn btn--primary btn--sm" onclick="loadRatios()" id="btn-load-ratios">Compute Ratios</button>
+        </div>
+        <div id="ratios-loading" class="loading" style="display:none"><div class="spinner"></div> Computing…</div>
+        <div id="ratios-content" style="display:none"></div>
+    </div>
+
+    <!-- ── Financial Statements ── -->
+    <div class="card" style="margin-top:18px">
+        <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:14px;flex-wrap:wrap;gap:8px">
+            <span style="font-size:14px;font-weight:700;color:var(--text-primary)">Financial Statements</span>
+            <div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap">
+                <button class="period-btn active" id="stmt-btn-income"   onclick="loadStatements('income',this)">Income Statement</button>
+                <button class="period-btn"        id="stmt-btn-balance"  onclick="loadStatements('balance',this)">Balance Sheet</button>
+                <button class="period-btn"        id="stmt-btn-cashflow" onclick="loadStatements('cashflow',this)">Cash Flow</button>
+                <div class="controls__sep"></div>
+                <button class="period-btn active" id="stmt-period-annual" onclick="setStmtPeriod('annual',this)">Annual</button>
+                <button class="period-btn"        id="stmt-period-qtr"   onclick="setStmtPeriod('quarterly',this)">Quarterly</button>
+            </div>
+        </div>
+        <div id="stmt-loading" class="loading" style="display:none"><div class="spinner"></div> Loading statements…</div>
+        <div id="stmt-content" style="display:none;overflow-x:auto"></div>
+    </div>
+
+</div>
+
+<!-- ═══════════════ CORRELATION ═══════════════ -->
+{% elif module == 'correlation' %}
+<div class="module-header">
+    <span class="module-header__dot" style="color:var(--orange)">●</span>
+    <span class="module-header__title">Correlation Matrix</span>
+    <span class="module-header__sub">Rolling return correlations across tickers</span>
+    <span class="module-header__tag" style="background:var(--orange)">CORR</span>
+    <button class="help-btn" onclick="showHelp('correlation')" title="Help & Instructions">? Help</button>
+</div>
+<div class="controls">
+    <div class="controls__row">
+        <span class="controls__label">Tickers (comma-separated)</span>
+        <input type="text" id="corr-tickers" class="form-control" style="width:360px;font-size:14px;font-weight:600" value="AAPL,MSFT,GOOGL,AMZN,TSLA,SPY">
+        <span class="controls__label">Period</span>
+        <button class="period-btn" data-period="6M" onclick="setPeriod(this,'corr')">6M</button>
+        <button class="period-btn active" data-period="1Y" onclick="setPeriod(this,'corr')">1Y</button>
+        <button class="period-btn" data-period="2Y" onclick="setPeriod(this,'corr')">2Y</button>
+        <button class="btn btn--primary btn--sm" onclick="runCorr()">Compute</button>
+        <button class="btn btn--sm" onclick="resetCorr()" title="Clear results and reset view" style="color:var(--text-dim);border-color:var(--border);background:transparent">↺ Reset</button>
+    </div>
+</div>
+<div id="corr-loading" class="loading" style="display:none"><div class="spinner"></div> Computing correlations...</div>
+<div id="corr-content" style="display:none">
+    <div class="card"><div id="corr-table"></div></div>
+</div>
+
+<!-- ═══════════════ ECONOMIC DATA ═══════════════ -->
+{% elif module == 'economic' %}
+<div class="module-header">
+    <span class="module-header__dot" style="color:var(--red)">●</span>
+    <span class="module-header__title">Economic Data</span>
+    <span class="module-header__sub">FRED API — 80+ series, interactive charts &amp; dashboard</span>
+    <span class="module-header__tag" style="background:var(--red)">ECON</span>
+    <button class="help-btn" onclick="showHelp('economic')" title="Help & Instructions">? Help</button>
+</div>
+
+<!-- View toggle row -->
+<div style="display:flex;gap:8px;margin-bottom:12px;align-items:center;flex-wrap:wrap">
+    <button class="period-btn econ-view-btn active" onclick="setEconView(this,'series')" id="econ-view-series">📈 Series Explorer</button>
+    <button class="period-btn econ-view-btn" onclick="setEconView(this,'dashboard')" id="econ-view-dashboard">📊 Macro Dashboard</button>
+    <button class="period-btn econ-view-btn" onclick="setEconView(this,'search')" id="econ-view-search">🔍 FRED Search</button>
+</div>
+
+<!-- ── SERIES EXPLORER ─────────────────────────────── -->
+<div id="econ-panel-series">
+<div class="controls">
+    <div class="controls__row">
+        <span class="controls__label">Category</span>
+        <select id="econ-cat" class="form-control" style="width:190px;font-size:13px" onchange="updateEconSeries()">
+            {% for cat in fred_catalogue %}
+            <option value="{{ cat }}">{{ cat }}</option>
+            {% endfor %}
+        </select>
+        <span class="controls__label">Series</span>
+        <select id="econ-series" class="form-control" style="width:320px;font-size:13px"></select>
+        <button class="btn btn--primary btn--sm" onclick="runEcon()">Load</button>
+        <button class="btn btn--secondary btn--sm" onclick="pinEconSeries()" title="Pin this series to compare chart">+ Compare</button>
+        <div class="controls__sep"></div>
+        <span class="controls__label">Period</span>
+        <button class="period-btn econ-period-btn active" data-years="1" onclick="setEconPeriod(this,1)">1Y</button>
+        <button class="period-btn econ-period-btn" data-years="5"  onclick="setEconPeriod(this,5)">5Y</button>
+        <button class="period-btn econ-period-btn" data-years="10" onclick="setEconPeriod(this,10)">10Y</button>
+        <button class="period-btn econ-period-btn" data-years="20" onclick="setEconPeriod(this,20)">20Y</button>
+        <button class="period-btn econ-period-btn" data-years="0"  onclick="setEconPeriod(this,0)">MAX</button>
+        <div class="controls__sep"></div>
+        <button class="btn btn--sm" onclick="resetEcon()" title="Clear results and reset view" style="color:var(--text-dim);border-color:var(--border);background:transparent">↺ Reset</button>
+    </div>
+    <div class="controls__row" style="margin-top:8px;gap:8px;flex-wrap:wrap">
+        <span class="controls__label">Chart</span>
+        <button class="period-btn econ-type-btn active" onclick="setEconType(this,'line')">Line</button>
+        <button class="period-btn econ-type-btn" onclick="setEconType(this,'bar')">Bar</button>
+        <button class="period-btn econ-type-btn" onclick="setEconType(this,'area')">Area</button>
+        <div class="controls__sep"></div>
+        <span class="controls__label">Overlays</span>
+        <button class="period-btn" id="econ-yoy-btn" onclick="toggleEconYoY()">YoY %</button>
+        <button class="period-btn" id="econ-ma-btn" onclick="toggleEconMA()">MA</button>
+        <button class="period-btn" id="econ-norm-btn" onclick="toggleEconNorm()" title="Normalize all series to 100 at period start">Index 100</button>
+        <button class="period-btn" id="econ-rec-btn active" onclick="toggleEconRec()" style="font-size:10px">Recessions</button>
+        <div class="controls__sep"></div>
+        <span class="controls__label">Pinned</span>
+        <div id="econ-pins" style="display:flex;gap:6px;flex-wrap:wrap;align-items:center">
+            <span style="font-size:11px;color:var(--text-dim)" id="econ-pins-empty">None — click "+ Compare" to overlay series</span>
+        </div>
+        <button class="btn btn--secondary btn--sm" onclick="clearEconPins()" style="font-size:11px;padding:4px 10px">Clear Pins</button>
+    </div>
+</div>
+
+<div id="econ-loading" class="loading" style="display:none"><div class="spinner"></div> Fetching from FRED...</div>
+
+<div id="econ-content" style="display:none">
+    <!-- Stats row -->
+    <div id="econ-stats" class="stats-grid" style="margin-bottom:12px"></div>
+
+    <!-- Main chart -->
+    <div class="card" style="padding:16px">
+        <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:10px;flex-wrap:wrap;gap:8px">
+            <div id="econ-chart-title" style="font-size:14px;font-weight:700;color:var(--text-primary)"></div>
+            <div style="display:flex;gap:8px;align-items:center">
+                <span id="econ-ma-label" style="font-size:11px;color:var(--text-dim);display:none">MA:
+                    <select id="econ-ma-period" onchange="if(_econRaw)renderEcon()"
+                        style="background:var(--accent);border:1px solid var(--border);color:var(--text-primary);
+                               font-size:11px;padding:2px 6px;border-radius:4px">
+                        <option value="12">12</option>
+                        <option value="24">24</option>
+                        <option value="36">36</option>
+                    </select>-period
+                </span>
+                <button class="btn btn--secondary btn--sm" onclick="downloadEconCSV()" style="font-size:11px;padding:4px 12px">↓ CSV</button>
+            </div>
+        </div>
+        <div class="chart-wrap" style="height:440px;margin-bottom:0"><div id="chart-econ" style="width:100%;height:100%"></div></div>
+    </div>
+
+    <!-- YoY chart (shown when overlay enabled) -->
+    <div id="econ-yoy-panel" style="display:none">
+        <div class="card" style="padding:16px">
+            <div style="font-size:13px;font-weight:700;color:var(--text-primary);margin-bottom:10px">Year-over-Year % Change</div>
+            <div class="chart-wrap" style="height:220px;margin-bottom:0"><div id="chart-econ-yoy" style="width:100%;height:100%"></div></div>
+        </div>
+    </div>
+
+    <!-- Recession bands info -->
+    <div style="font-size:11px;color:var(--text-dim);text-align:center;margin-top:4px">
+        Grey bands = US recessions (NBER). Source: Federal Reserve Bank of St. Louis (FRED)
+    </div>
+</div>
+</div><!-- end #econ-panel-series -->
+
+<!-- ── MACRO DASHBOARD ────────────────────────────── -->
+<div id="econ-panel-dashboard" style="display:none">
+    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px;flex-wrap:wrap;gap:8px">
+        <div style="font-size:13px;color:var(--text-dim)">Key macro indicators — last 5 years of data</div>
+        <div style="display:flex;gap:8px">
+            <span class="controls__label">Period</span>
+            <button class="period-btn econ-dash-period active" data-years="1" onclick="setDashPeriod(this,1)">1Y</button>
+            <button class="period-btn econ-dash-period" data-years="3" onclick="setDashPeriod(this,3)">3Y</button>
+            <button class="period-btn econ-dash-period" data-years="5" onclick="setDashPeriod(this,5)">5Y</button>
+            <button class="period-btn econ-dash-period" data-years="0" onclick="setDashPeriod(this,0)">MAX</button>
+        </div>
+    </div>
+    <div id="econ-dash-loading" class="loading" style="display:none"><div class="spinner"></div> Loading dashboard…</div>
+    <div id="econ-dash-grid" class="econ-dash-grid"></div>
+</div><!-- end #econ-panel-dashboard -->
+
+<!-- ── FRED SEARCH ────────────────────────────────── -->
+<div id="econ-panel-search" style="display:none">
+    <div class="card" style="padding:16px;margin-bottom:12px">
+        <div style="font-size:13px;font-weight:700;color:var(--text-primary);margin-bottom:10px">
+            🔍 Search FRED — 800,000+ economic time series
+        </div>
+        <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+            <input type="text" id="fred-search-input" class="form-control"
+                placeholder="e.g. inflation, unemployment rate, housing starts…"
+                style="width:400px;font-size:13px"
+                onkeydown="if(event.key==='Enter')runFredSearch()">
+            <button class="btn btn--primary btn--sm" onclick="runFredSearch()">Search</button>
+            <span style="font-size:11px;color:var(--text-dim)">Results sorted by popularity</span>
+        </div>
+    </div>
+    <div id="fred-search-loading" class="loading" style="display:none"><div class="spinner"></div> Searching FRED…</div>
+    <div id="fred-search-results" style="display:none">
+        <div id="fred-search-table"></div>
+        <div style="font-size:11px;color:var(--text-dim);margin-top:8px;text-align:center">
+            Click <strong>Load</strong> on any result to view it in the Series Explorer.
+            ★ = already in your curated catalogue.
+        </div>
+    </div>
+</div><!-- end #econ-panel-search -->
+
+<script>
+const FRED_CAT = {{ fred_catalogue | tojson }};
+function updateEconSeries() {
+    const cat = document.getElementById('econ-cat').value;
+    const sel = document.getElementById('econ-series');
+    sel.innerHTML = '';
+    const series = FRED_CAT[cat] || {};
+    for (const [sid, info] of Object.entries(series)) {
+        const opt = document.createElement('option');
+        opt.value = sid;
+        opt.textContent = sid + ' — ' + info[0];
+        sel.appendChild(opt);
+    }
+}
+updateEconSeries();
+</script>
+
+<!-- ═══════════════ NEWS & SENTIMENT ═══════════════ -->
+{% elif module == 'news' %}
+<div class="module-header">
+    <span class="module-header__dot" style="color:var(--purple)">●</span>
+    <span class="module-header__title">News & Sentiment</span>
+    <span class="module-header__sub">LLM-powered sentiment from Polygon.io</span>
+    <span class="module-header__tag" style="background:var(--purple)">NEWS</span>
+    <button class="help-btn" onclick="showHelp('news')" title="Help & Instructions">? Help</button>
+</div>
+<div class="controls">
+    <div class="controls__row">
+        <span class="controls__label">Symbol</span>
+        <input type="text" id="news-ticker" class="controls__input" placeholder="AAPL" maxlength="6">
+        <span class="controls__label">Articles</span>
+        <select id="news-limit" class="form-control" style="width:80px;font-size:13px">
+            <option value="10">10</option><option value="25">25</option>
+            <option value="50" selected>50</option><option value="100">100</option>
+        </select>
+        <button class="btn btn--primary btn--sm" onclick="runNews()">Fetch News</button>
+        <button class="btn btn--sm" onclick="resetNews()" title="Clear results and reset view" style="color:var(--text-dim);border-color:var(--border);background:transparent">↺ Reset</button>
+        <div class="controls__sep"></div>
+        {% for s in ['AAPL','MSFT','TSLA','NVDA','AMZN','META'] %}
+        <button class="quick-btn" onclick="document.getElementById('news-ticker').value='{{s}}';runNews()">{{s}}</button>
+        {% endfor %}
+    </div>
+</div>
+<div id="news-status" style="font-size:13px;color:var(--text-sec);margin-bottom:12px"></div>
+<div id="news-loading" class="loading" style="display:none"><div class="spinner"></div> Fetching news...</div>
+<div id="news-content" style="display:none">
+    <div id="news-summary" style="margin-bottom:12px"></div>
+    <div class="tabs">
+        <button class="tab-btn active" onclick="switchTab('news',this,'feed')">Feed</button>
+        <button class="tab-btn" onclick="switchTab('news',this,'timeline')">Timeline</button>
+        <button class="tab-btn" onclick="switchTab('news',this,'dist')">Distribution</button>
+        <button class="tab-btn" onclick="switchTab('news',this,'keywords')">Keywords</button>
+    </div>
+    <div id="news-feed" class="tab-content active"></div>
+    <div id="news-timeline" class="tab-content"><div class="chart-wrap"><canvas id="chart-news-tl"></canvas></div></div>
+    <div id="news-dist" class="tab-content"><div class="chart-wrap"><canvas id="chart-news-dist"></canvas></div></div>
+    <div id="news-keywords" class="tab-content"><div class="chart-wrap"><canvas id="chart-news-kw"></canvas></div></div>
+</div>
+
+<!-- ═══════════════ SIGNAL ANALYSIS ═══════════════ -->
+{% elif module == 'signal' %}
+<div class="module-header">
+    <span class="module-header__dot" style="color:var(--cyan)">◆</span>
+    <span class="module-header__title">Composite Signal Analysis</span>
+    <span class="module-header__sub">Technical + Fundamental + Sentiment + Risk</span>
+    <span class="module-header__tag" style="background:linear-gradient(135deg,var(--cyan),var(--purple));color:#0C0E14">SIGNAL</span>
+    <button class="help-btn" onclick="showHelp('signal')" title="Help & Instructions">? Help</button>
+</div>
+
+<div class="tabs" style="margin-bottom:0">
+    <button class="tab-btn active" onclick="switchSignalTab(this,'live')">Live Signal</button>
+    <button class="tab-btn" onclick="switchSignalTab(this,'backtest')">Backtesting</button>
+</div>
+
+<!-- Live Signal Tab -->
+<div id="signal-tab-live">
+    <div class="controls">
+        <div class="controls__row">
+            <span class="controls__label">Symbol</span>
+            <input type="text" id="signal-ticker" class="controls__input" placeholder="AAPL" maxlength="6">
+            <button class="btn btn--primary btn--sm" onclick="runSignal()">Run Signal Analysis</button>
+            <button class="btn btn--sm" onclick="resetSignal()" title="Clear results and reset view" style="color:var(--text-dim);border-color:var(--border);background:transparent">↺ Reset</button>
+            <div class="controls__sep"></div>
+            {% for s in ['AAPL','MSFT','TSLA','NVDA','GOOGL'] %}
+            <button class="quick-btn" onclick="document.getElementById('signal-ticker').value='{{s}}';runSignal()">{{s}}</button>
+            {% endfor %}
+        </div>
+    </div>
+    <div class="disclaimer" style="margin-bottom:12px">For informational purposes only. Not investment advice.</div>
+    <div id="signal-loading" class="loading" style="display:none"><div class="spinner"></div> Running composite analysis (this may take 15-30 seconds)...</div>
+    <div id="signal-content" style="display:none"></div>
+</div>
+
+<!-- Backtesting Tab -->
+<div id="signal-tab-backtest" style="display:none">
+
+    <!-- Strategy selector cards -->
+    <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(220px,1fr));gap:10px;margin-bottom:14px">
+        <div class="bt-strategy-card active" data-strategy="combined" onclick="selectStrategy(this,'combined')">
+            <div class="bt-strategy-card__icon">◆</div>
+            <div class="bt-strategy-card__name">Combined Signal</div>
+            <div class="bt-strategy-card__desc">RSI · MACD · BB · SMA cross · EMA · Stochastic · Momentum — 8 indicators, equally weighted</div>
+        </div>
+        <div class="bt-strategy-card" data-strategy="sma_crossover" onclick="selectStrategy(this,'sma_crossover')">
+            <div class="bt-strategy-card__icon">⟋</div>
+            <div class="bt-strategy-card__name">SMA Crossover</div>
+            <div class="bt-strategy-card__desc">Golden cross / death cross of the 50-day and 200-day simple moving averages</div>
+        </div>
+        <div class="bt-strategy-card" data-strategy="momentum" onclick="selectStrategy(this,'momentum')">
+            <div class="bt-strategy-card__icon">▶</div>
+            <div class="bt-strategy-card__name">Momentum</div>
+            <div class="bt-strategy-card__desc">RSI + 20-day rate of change + Stochastic %K — pure price momentum signals</div>
+        </div>
+        <div class="bt-strategy-card bt-strategy-card--macro" data-strategy="macro_composite" onclick="selectStrategy(this,'macro_composite')">
+            <div class="bt-strategy-card__icon">🌐</div>
+            <div class="bt-strategy-card__name">Macro Composite</div>
+            <div class="bt-strategy-card__desc">Technical (70%) · Point &amp; Figure (10%) · Macro: yield curve + VIX + unemployment (20%)</div>
+            <div class="bt-strategy-card__badge">NEW</div>
+        </div>
+    </div>
+
+    <div class="controls">
+        <div class="controls__row">
+            <span class="controls__label">Symbol</span>
+            <input type="text" id="bt-ticker" class="controls__input" placeholder="AAPL" maxlength="6">
+            <div class="controls__sep"></div>
+            <span class="controls__label">Preset</span>
+            <button class="period-btn bt-preset-btn" onclick="setBtPreset(this,'1Y')">1Y</button>
+            <button class="period-btn bt-preset-btn" onclick="setBtPreset(this,'3Y')">3Y</button>
+            <button class="period-btn bt-preset-btn active" onclick="setBtPreset(this,'5Y')">5Y</button>
+            <button class="period-btn bt-preset-btn" onclick="setBtPreset(this,'10Y')">10Y</button>
+            <button class="period-btn bt-preset-btn" onclick="setBtPreset(this,'MAX')">MAX</button>
+            <div class="controls__sep"></div>
+            <span class="controls__label">Start</span>
+            <input type="date" id="bt-start" class="form-control" style="width:140px;font-size:13px">
+            <span class="controls__label">End</span>
+            <input type="date" id="bt-end" class="form-control" style="width:140px;font-size:13px">
+        </div>
+        <div class="controls__row" style="margin-top:8px;flex-wrap:wrap;gap:10px">
+            <span class="controls__label">Capital&nbsp;($)</span>
+            <input type="number" id="bt-capital" class="form-control" style="width:110px;font-size:13px" value="10000" min="100" step="100">
+            <span class="controls__label">Buy&nbsp;Thresh</span>
+            <input type="number" id="bt-buy-thresh" class="form-control" style="width:80px;font-size:13px" value="0.15" step="0.01" min="0.01" max="1">
+            <span class="controls__label">Sell&nbsp;Thresh</span>
+            <input type="number" id="bt-sell-thresh" class="form-control" style="width:80px;font-size:13px" value="-0.15" step="0.01" min="-1" max="-0.01">
+            <span class="controls__label">Lookback&nbsp;(days)</span>
+            <select id="bt-lookback" class="form-control" style="width:90px;font-size:13px">
+                <option value="60">60</option>
+                <option value="90">90</option>
+                <option value="120" selected>120</option>
+                <option value="180">180</option>
+                <option value="252">252</option>
+            </select>
+            <button class="btn btn--primary btn--sm" onclick="runBacktest()">Run Backtest</button>
+            <button class="btn btn--sm" onclick="resetBt()" title="Clear results and reset view" style="color:var(--text-dim);border-color:var(--border);background:transparent">↺ Reset</button>
+            <div class="controls__sep"></div>
+            {% for s in ['AAPL','MSFT','TSLA','NVDA','GOOGL','SPY'] %}
+            <button class="quick-btn" onclick="document.getElementById('bt-ticker').value='{{s}}'">{{s}}</button>
+            {% endfor %}
+        </div>
+    </div>
+    <div class="disclaimer" style="margin-bottom:12px">Backtests simulate historical performance. The Macro Composite strategy fetches live FRED data (first run may be slower). Past performance does not indicate future results.</div>
+    <div id="bt-loading" class="loading" style="display:none"><div class="spinner"></div> Running backtest simulation...</div>
+    <div id="bt-content" style="display:none"></div>
+</div>
+
+<script>
+(function(){
+    const today = new Date();
+    const fmt = d => `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;
+    document.getElementById('bt-end').value = fmt(today);
+    // Default preset = 5Y
+    const y5 = new Date(today); y5.setFullYear(y5.getFullYear()-5);
+    document.getElementById('bt-start').value = fmt(y5);
+})();
+
+function switchSignalTab(btn, tab){
+    document.querySelectorAll('.tabs .tab-btn').forEach(b=>b.classList.remove('active'));
+    btn.classList.add('active');
+    document.getElementById('signal-tab-live').style.display = tab==='live' ? '' : 'none';
+    document.getElementById('signal-tab-backtest').style.display = tab==='backtest' ? '' : 'none';
+}
+</script>
+
+<!-- ═══════════════ LISTINGS EXPLORER ═══════════════ -->
+{% elif module == 'listings' %}
+<div class="module-header">
+    <span class="module-header__dot" style="color:var(--green)">●</span>
+    <span class="module-header__title">Listings Explorer</span>
+    <span class="module-header__sub">Search {{ "{:,}".format(le_stats.get('total',0)) }} securities with natural language or structured filters</span>
+    <span class="module-header__tag" style="background:var(--green)">LIST</span>
+    <button class="help-btn" onclick="showHelp('listings')" title="Help & Instructions">? Help</button>
+</div>
+
+<!-- Dataset stat chips -->
+<div class="le-stat-row">
+    <div class="le-stat-chip">
+        <span class="le-stat-val">{{ "{:,}".format(le_stats.get('total',0)) }}</span> total
+    </div>
+    <div class="le-stat-chip le-stat-chip--blue">
+        <span class="le-stat-val">{{ le_stats.get('etfs',0) }}</span> ETFs
+    </div>
+    <div class="le-stat-chip le-stat-chip--purple">
+        <span class="le-stat-val">{{ le_stats.get('stocks',0) }}</span> Stocks
+    </div>
+    <div class="le-stat-chip le-stat-chip--green">
+        <span class="le-stat-val">{{ le_stats.get('active',0) }}</span> Active
+    </div>
+    <div class="le-stat-chip le-stat-chip--red">
+        <span class="le-stat-val">{{ le_stats.get('delisted',0) }}</span> Delisted
+    </div>
+    <div class="le-stat-chip">
+        <span class="le-stat-val">{{ le_stats.get('exchanges',0) }}</span> Exchanges
+    </div>
+</div>
+
+<!-- Search + Filters -->
+<div class="controls le-controls-block">
+    <div class="controls__row" style="flex-wrap:wrap;gap:8px">
+        <div class="le-search-box" id="leSearchBoxWrap">
+            <span class="le-search-icon">🔍</span>
+            <input type="text" id="le-query" class="controls__input le-search-input"
+                   placeholder='Try "Goldman Sachs ETFs" or "energy stocks IPO before 2000"…'
+                   autocomplete="off" spellcheck="false" />
+            <button class="le-clear-btn" id="leClearBtn" onclick="leClearSearch()" style="display:none" title="Clear">✕</button>
+        </div>
+        <div class="controls__sep"></div>
+        <select class="controls__input le-select" id="le-exchange" onchange="leSearch()">
+            <option value="">All Exchanges</option>
+            <option>NASDAQ</option><option>NYSE</option>
+            <option>NYSE ARCA</option><option>BATS</option><option>NYSE MKT</option>
+        </select>
+        <select class="controls__input le-select" id="le-type" onchange="leSearch()">
+            <option value="">All Types</option>
+            <option value="ETF">ETF</option>
+            <option value="Stock">Stock</option>
+        </select>
+        <select class="controls__input le-select" id="le-status" onchange="leSearch()">
+            <option value="">Any Status</option>
+            <option value="Active">Active</option>
+            <option value="Delisted">Delisted</option>
+        </select>
+        <input type="text" class="controls__input le-year-input" id="le-ipo-after"
+               placeholder="IPO after (YYYY)" maxlength="4" onchange="leSearch()" />
+        <input type="text" class="controls__input le-year-input" id="le-ipo-before"
+               placeholder="IPO before (YYYY)" maxlength="4" onchange="leSearch()" />
+        <button class="btn btn--primary btn--sm" onclick="leSearch()">Search</button>
+        <button class="btn btn--sm" onclick="leClearFilters()"
+                style="background:transparent;color:var(--text-sec);border:1px solid var(--border)">Clear</button>
+    </div>
+    <!-- Autocomplete dropdown (positioned relative to .le-controls-block) -->
+    <div class="le-dropdown" id="le-dropdown" style="display:none"></div>
+</div>
+
+<!-- Tabs -->
+<div class="tabs">
+    <button class="tab-btn active" onclick="switchTab('le',this,'results')">
+        Results <span class="le-badge" id="le-badge" style="display:none">0</span>
+    </button>
+    <button class="tab-btn" onclick="switchTab('le',this,'analytics');leLoadAnalytics()">Analytics</button>
+</div>
+
+<!-- Results panel -->
+<div id="le-results" class="tab-content active">
+    <div id="le-loading" class="loading" style="display:none"><div class="spinner"></div> Searching…</div>
+    <div id="le-results-area">
+        <div class="le-empty-state">
+            <div class="le-empty-icon">🔭</div>
+            <div class="le-empty-title">Search the Universe</div>
+            <p style="color:var(--text-sec);margin:8px 0 20px;font-size:13px">
+                Search across {{ "{:,}".format(le_stats.get('total',0)) }} securities by name, symbol, sector, or strategy.
+            </p>
+            <div class="le-examples">
+                {% for ex in ['Goldman Sachs ETFs','energy stocks on NYSE','tech IPOs after 2020','delisted NASDAQ stocks','healthcare ETFs'] %}
+                <button class="quick-btn" onclick="leUseExample(this)">{{ ex }}</button>
+                {% endfor %}
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- Analytics panel -->
+<div id="le-analytics" class="tab-content">
+    <div class="le-chart-grid">
+        <!-- IPO Timeline — full width -->
+        <div class="card le-chart-card le-chart-wide">
+            <div class="le-chart-header">
+                <span class="le-chart-label">IPO TIMELINE</span>
+                <div style="display:flex;gap:4px">
+                    <button class="period-btn active" onclick="leSetIpoRange('all',this)">All</button>
+                    <button class="period-btn" onclick="leSetIpoRange(20,this)">20yr</button>
+                    <button class="period-btn" onclick="leSetIpoRange(10,this)">10yr</button>
+                    <button class="period-btn" onclick="leSetIpoRange(5,this)">5yr</button>
+                </div>
+            </div>
+            <div class="chart-wrap" style="height:220px"><canvas id="le-ipo-chart"></canvas></div>
+        </div>
+        <!-- Three doughnut charts -->
+        <div class="card le-chart-card">
+            <div class="le-chart-header"><span class="le-chart-label">BY EXCHANGE</span></div>
+            <div class="chart-wrap" style="height:200px"><canvas id="le-exchange-chart"></canvas></div>
+        </div>
+        <div class="card le-chart-card">
+            <div class="le-chart-header"><span class="le-chart-label">ASSET TYPE</span></div>
+            <div class="chart-wrap" style="height:200px"><canvas id="le-type-chart"></canvas></div>
+        </div>
+        <div class="card le-chart-card">
+            <div class="le-chart-header"><span class="le-chart-label">STATUS</span></div>
+            <div class="chart-wrap" style="height:200px"><canvas id="le-status-chart"></canvas></div>
+        </div>
+    </div>
+</div>
+
+<!-- Detail modal -->
+<div class="le-modal-overlay" id="leModalOverlay" onclick="leCloseModal()"></div>
+<div class="le-modal" id="leModal">
+    <button class="le-modal-close" onclick="leCloseModal()" title="Close">✕</button>
+    <div id="leModalBody"></div>
+</div>
+
+{% endif %}
+{% endblock %}
+
+{% block scripts %}
+<script src="{{ url_for('static', filename='js/app.js') }}"></script>
+{% endblock %}

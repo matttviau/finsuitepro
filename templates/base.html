@@ -1,0 +1,348 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{% block title %}SwiftClarity Terminal™{% endblock %}</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link href="https://fonts.googleapis.com/css2?family=DM+Sans:ital,opsz,wght@0,9..40,300;0,9..40,400;0,9..40,500;0,9..40,600;0,9..40,700&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
+    <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chartjs-adapter-date-fns@3.0.0/dist/chartjs-adapter-date-fns.bundle.min.js"></script>
+    <script src="https://cdn.plot.ly/plotly-2.32.0.min.js"></script>
+    {% block head %}{% endblock %}
+</head>
+<body class="{% if not current_user.is_authenticated %}auth-page{% endif %}">
+    {% if current_user.is_authenticated %}
+    <!-- TOP NAV -->
+    <header class="topnav">
+        <div class="topnav__brand">
+            <img src="{{ url_for('static', filename='images/paralux_logo.png') }}" alt="Paralux" class="topnav__logo">
+            <span class="topnav__title">SwiftClarity Terminal™</span>
+        </div>
+        <div class="topnav__center">Financial Analysis Dashboard</div>
+        <div class="topnav__right">
+            <span class="topnav__clock" id="clock"></span>
+            <span class="topnav__status">● Connected</span>
+            <div class="topnav__user" onclick="document.getElementById('userMenu').classList.toggle('show')">
+                <span class="topnav__avatar">{{ current_user.username[0]|upper }}</span>
+                <span class="topnav__username">{{ current_user.username }}</span>
+                <div class="user-menu" id="userMenu">
+                    <a href="{{ url_for('profile') }}">Profile & Settings</a>
+                    <a href="{{ url_for('logout') }}" class="user-menu__logout">Sign Out</a>
+                </div>
+            </div>
+        </div>
+    </header>
+
+    <!-- SIDEBAR -->
+    <aside class="sidebar">
+        <div class="sidebar__label">MODULES</div>
+        <a href="{{ url_for('dashboard') }}" class="sidebar__item {% if request.endpoint == 'dashboard' %}active{% endif %}">
+            <span class="sidebar__dot" style="color:var(--cyan)">●</span> Home
+        </a>
+        <a href="{{ url_for('economic') }}" class="sidebar__item {% if request.endpoint == 'economic' %}active{% endif %}">
+            <span class="sidebar__dot" style="color:var(--red)">●</span> Economic Data
+        </a>
+        <a href="{{ url_for('technical') }}" class="sidebar__item {% if request.endpoint == 'technical' %}active{% endif %}">
+            <span class="sidebar__dot" style="color:var(--blue)">●</span> Technical Analysis
+        </a>
+        <a href="{{ url_for('fundamentals') }}" class="sidebar__item {% if request.endpoint == 'fundamentals' %}active{% endif %}">
+            <span class="sidebar__dot" style="color:var(--gold)">●</span> SEC Fundamentals
+        </a>
+        <a href="{{ url_for('correlation') }}" class="sidebar__item {% if request.endpoint == 'correlation' %}active{% endif %}">
+            <span class="sidebar__dot" style="color:var(--orange)">●</span> Correlation Matrix
+        </a>
+        <a href="{{ url_for('news') }}" class="sidebar__item {% if request.endpoint == 'news' %}active{% endif %}">
+            <span class="sidebar__dot" style="color:var(--purple)">●</span> News & Sentiment
+        </a>
+        <a href="{{ url_for('listings') }}" class="sidebar__item {% if request.endpoint == 'listings' %}active{% endif %}">
+            <span class="sidebar__dot" style="color:var(--green)">●</span> Listings Explorer
+        </a>
+        <div class="sidebar__divider"></div>
+        <a href="{{ url_for('signal_page') }}" class="sidebar__item sidebar__signal {% if request.endpoint == 'signal_page' %}active{% endif %}">
+            ◆ Signal Analysis
+        </a>
+        <a href="{{ url_for('alerts_page') }}" class="sidebar__item sidebar__alerts {% if request.endpoint == 'alerts_page' %}active{% endif %}">
+            🔔 Alert Center
+        </a>
+        <div class="sidebar__divider"></div>
+        <button class="sidebar__item sidebar__journal-btn" onclick="openJournal()" title="Open Trading Journal">
+            📒 Trade Journal
+        </button>
+        <div class="sidebar__footer">SwiftClarity Terminal™ - product of Paralux Inc.</div>
+    </aside>
+
+    <!-- ═══════════════ TRADING JOURNAL DRAWER ═══════════════ -->
+    <div class="tj-overlay" id="tjOverlay" onclick="if(event.target===this)closeJournal()"></div>
+    <aside class="tj-drawer" id="tjDrawer">
+        <div class="tj-drawer__header">
+            <div class="tj-drawer__title">
+                <span class="tj-drawer__icon">📒</span>
+                <span>Trade Journal</span>
+            </div>
+            <div class="tj-drawer__actions">
+                <button class="tj-btn tj-btn--primary" onclick="openTradeForm()">＋ New Trade</button>
+                <button class="tj-drawer__close" onclick="closeJournal()">✕</button>
+            </div>
+        </div>
+
+        <!-- Stats bar -->
+        <div class="tj-stats-bar" id="tjStatsBar">
+            <div class="tj-stat"><span class="tj-stat__val" id="tjStatTrades">—</span><span class="tj-stat__lbl">Total Trades</span></div>
+            <div class="tj-stat"><span class="tj-stat__val" id="tjStatOpen">—</span><span class="tj-stat__lbl">Open</span></div>
+            <div class="tj-stat"><span class="tj-stat__val" id="tjStatWR">—</span><span class="tj-stat__lbl">Win Rate</span></div>
+            <div class="tj-stat"><span class="tj-stat__val" id="tjStatPnL">—</span><span class="tj-stat__lbl">Total P&amp;L</span></div>
+            <div class="tj-stat"><span class="tj-stat__val" id="tjStatPF">—</span><span class="tj-stat__lbl">Profit Factor</span></div>
+            <div class="tj-stat"><span class="tj-stat__val" id="tjStatRR">—</span><span class="tj-stat__lbl">Avg R:R</span></div>
+        </div>
+
+        <!-- Filter bar -->
+        <div class="tj-filters">
+            <input class="tj-filter-input" id="tjFilterTicker" placeholder="Filter by ticker…" oninput="tjApplyFilters()">
+            <select class="tj-filter-sel" id="tjFilterStatus" onchange="tjApplyFilters()">
+                <option value="all">All Trades</option>
+                <option value="open">Open</option>
+                <option value="closed">Closed</option>
+            </select>
+            <select class="tj-filter-sel" id="tjFilterSide" onchange="tjApplyFilters()">
+                <option value="">All Sides</option>
+                <option value="long">Long</option>
+                <option value="short">Short</option>
+            </select>
+        </div>
+
+        <!-- Table -->
+        <div class="tj-table-wrap" id="tjTableWrap">
+            <table class="tj-table">
+                <thead>
+                    <tr>
+                        <th onclick="tjSort('ticker')">Ticker <span class="tj-sort-icon" data-col="ticker">⇅</span></th>
+                        <th onclick="tjSort('side')">Side <span class="tj-sort-icon" data-col="side">⇅</span></th>
+                        <th onclick="tjSort('setup_type')">Setup</th>
+                        <th onclick="tjSort('entry_date')">Entry <span class="tj-sort-icon" data-col="entry_date">⇅</span></th>
+                        <th>Entry $</th>
+                        <th>Exit $</th>
+                        <th onclick="tjSort('pnl_pct')">P&amp;L% <span class="tj-sort-icon" data-col="pnl_pct">⇅</span></th>
+                        <th>R:R</th>
+                        <th onclick="tjSort('status')">Status <span class="tj-sort-icon" data-col="status">⇅</span></th>
+                        <th></th>
+                    </tr>
+                </thead>
+                <tbody id="tjTbody">
+                    <tr><td colspan="10" class="tj-empty">No trades logged yet. Click <strong>＋ New Trade</strong> to get started.</td></tr>
+                </tbody>
+            </table>
+        </div>
+    </aside>
+
+    <!-- ═══════════════ TRADE FORM MODAL ═══════════════ -->
+    <div class="tj-form-overlay" id="tjFormOverlay" onclick="if(event.target===this)closeTradeForm()">
+        <div class="tj-form-modal" id="tjFormModal">
+            <div class="tj-form-header">
+                <span class="tj-form-title" id="tjFormTitle">Log New Trade</span>
+                <button class="tj-drawer__close" onclick="closeTradeForm()">✕</button>
+            </div>
+            <div class="tj-form-body">
+                <input type="hidden" id="tjEditId">
+
+                <!-- Row 1: Core identifiers -->
+                <div class="tj-form-section-label">Trade Identification</div>
+                <div class="tj-form-row tj-form-row--4">
+                    <div class="tj-form-group">
+                        <label>Ticker *</label>
+                        <input class="tj-input" id="tjFTicker" placeholder="AAPL" style="text-transform:uppercase">
+                    </div>
+                    <div class="tj-form-group">
+                        <label>Company</label>
+                        <input class="tj-input" id="tjFCompany" placeholder="Apple Inc.">
+                    </div>
+                    <div class="tj-form-group">
+                        <label>Side *</label>
+                        <select class="tj-input" id="tjFSide">
+                            <option value="long">Long</option>
+                            <option value="short">Short</option>
+                        </select>
+                    </div>
+                    <div class="tj-form-group">
+                        <label>Asset Type</label>
+                        <select class="tj-input" id="tjFAsset">
+                            <option value="equity">Equity</option>
+                            <option value="option">Option</option>
+                            <option value="crypto">Crypto</option>
+                            <option value="futures">Futures</option>
+                            <option value="forex">Forex</option>
+                            <option value="etf">ETF</option>
+                        </select>
+                    </div>
+                </div>
+
+                <!-- Row 2: Execution -->
+                <div class="tj-form-section-label">Execution</div>
+                <div class="tj-form-row tj-form-row--4">
+                    <div class="tj-form-group">
+                        <label>Entry Date *</label>
+                        <input class="tj-input" id="tjFEntryDate" type="date">
+                    </div>
+                    <div class="tj-form-group">
+                        <label>Entry Price *</label>
+                        <input class="tj-input" id="tjFEntryPrice" type="number" step="0.0001" placeholder="0.00">
+                    </div>
+                    <div class="tj-form-group">
+                        <label>Exit Date</label>
+                        <input class="tj-input" id="tjFExitDate" type="date">
+                    </div>
+                    <div class="tj-form-group">
+                        <label>Exit Price</label>
+                        <input class="tj-input" id="tjFExitPrice" type="number" step="0.0001" placeholder="0.00">
+                    </div>
+                </div>
+                <div class="tj-form-row tj-form-row--4">
+                    <div class="tj-form-group">
+                        <label>Quantity / Shares</label>
+                        <input class="tj-input" id="tjFQty" type="number" step="0.001" placeholder="1">
+                    </div>
+                    <div class="tj-form-group">
+                        <label>Stop Loss</label>
+                        <input class="tj-input" id="tjFSL" type="number" step="0.0001" placeholder="0.00">
+                    </div>
+                    <div class="tj-form-group">
+                        <label>Take Profit</label>
+                        <input class="tj-input" id="tjFTP" type="number" step="0.0001" placeholder="0.00">
+                    </div>
+                    <div class="tj-form-group">
+                        <label>Status</label>
+                        <select class="tj-input" id="tjFStatus">
+                            <option value="open">Open</option>
+                            <option value="closed">Closed</option>
+                        </select>
+                    </div>
+                </div>
+
+                <!-- Row 3: Setup & Analysis -->
+                <div class="tj-form-section-label">Setup &amp; Analysis</div>
+                <div class="tj-form-row tj-form-row--3">
+                    <div class="tj-form-group">
+                        <label>Setup Type</label>
+                        <input class="tj-input" id="tjFSetup" placeholder="Breakout, Pullback, Reversal…">
+                    </div>
+                    <div class="tj-form-group">
+                        <label>Timeframe</label>
+                        <select class="tj-input" id="tjFTimeframe">
+                            <option value="">—</option>
+                            <option value="Scalp">Scalp (minutes)</option>
+                            <option value="Intraday">Intraday</option>
+                            <option value="Swing">Swing (2–10 days)</option>
+                            <option value="Position">Position (weeks)</option>
+                            <option value="Investment">Investment (months+)</option>
+                        </select>
+                    </div>
+                    <div class="tj-form-group">
+                        <label>Conviction (1–5)</label>
+                        <div class="tj-conviction-wrap">
+                            <input class="tj-input" id="tjFConviction" type="range" min="1" max="5" value="3" oninput="document.getElementById('tjConvVal').textContent=this.value">
+                            <span id="tjConvVal" class="tj-conv-val">3</span>
+                        </div>
+                    </div>
+                </div>
+                <div class="tj-form-row tj-form-row--2">
+                    <div class="tj-form-group">
+                        <label>Emotional State</label>
+                        <select class="tj-input" id="tjFEmotion">
+                            <option value="">—</option>
+                            <option value="Disciplined">Disciplined</option>
+                            <option value="Calm">Calm</option>
+                            <option value="Patient">Patient</option>
+                            <option value="Anxious">Anxious</option>
+                            <option value="FOMO">FOMO</option>
+                            <option value="Greedy">Greedy</option>
+                            <option value="Fearful">Fearful</option>
+                            <option value="Overconfident">Overconfident</option>
+                        </select>
+                    </div>
+                    <div class="tj-form-group">
+                        <label>Tags (comma separated)</label>
+                        <input class="tj-input" id="tjFTags" placeholder="momentum, earnings, sector-rotation">
+                    </div>
+                </div>
+
+                <!-- Row 4: Narrative -->
+                <div class="tj-form-section-label">Trade Narrative</div>
+                <div class="tj-form-row tj-form-row--2">
+                    <div class="tj-form-group">
+                        <label>Entry Rationale</label>
+                        <textarea class="tj-textarea" id="tjFEntryRat" rows="3" placeholder="Why did you enter? Technical setup, catalyst, confluence…"></textarea>
+                    </div>
+                    <div class="tj-form-group">
+                        <label>Exit Rationale</label>
+                        <textarea class="tj-textarea" id="tjFExitRat" rows="3" placeholder="Why did you exit? Target hit, stop hit, thesis invalidated…"></textarea>
+                    </div>
+                </div>
+                <div class="tj-form-row tj-form-row--2">
+                    <div class="tj-form-group">
+                        <label>Mistakes</label>
+                        <textarea class="tj-textarea" id="tjFMistakes" rows="3" placeholder="What did you do wrong? Sized too large, chased entry, ignored stop…"></textarea>
+                    </div>
+                    <div class="tj-form-group">
+                        <label>Lessons Learned</label>
+                        <textarea class="tj-textarea" id="tjFLessons" rows="3" placeholder="What will you do differently next time?"></textarea>
+                    </div>
+                </div>
+            </div>
+            <div class="tj-form-footer">
+                <button class="tj-btn tj-btn--ghost" onclick="closeTradeForm()">Cancel</button>
+                <button class="tj-btn tj-btn--primary" onclick="submitTradeForm()">Save Trade</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- MAIN CONTENT -->
+    <main class="main-content">
+        {% with messages = get_flashed_messages(with_categories=true) %}
+        {% if messages %}
+        <div class="flash-container">
+            {% for category, message in messages %}
+            <div class="flash flash--{{ category }}">{{ message }}</div>
+            {% endfor %}
+        </div>
+        {% endif %}
+        {% endwith %}
+        {% block content %}{% endblock %}
+    </main>
+
+    <script>
+    // Clock
+    function updateClock(){
+        const el = document.getElementById('clock');
+        if(el) el.textContent = new Date().toLocaleString('en-US',{weekday:'short',month:'short',day:'numeric',hour:'2-digit',minute:'2-digit',second:'2-digit'});
+    }
+    setInterval(updateClock,1000); updateClock();
+
+    // Close user menu on outside click
+    document.addEventListener('click', e => {
+        const m = document.getElementById('userMenu');
+        if(m && !e.target.closest('.topnav__user')) m.classList.remove('show');
+    });
+
+    // Flash auto-dismiss
+    document.querySelectorAll('.flash').forEach(f => setTimeout(() => f.remove(), 5000));
+
+    </script>
+    {% else %}
+    {% block auth_content %}{% endblock %}
+    {% endif %}
+
+    <!-- ── Global Help Modal ── -->
+<div class="help-modal-overlay" id="helpModal" onclick="if(event.target===this)closeHelp()">
+    <div class="help-modal">
+        <div class="help-modal__header">
+            <h2 class="help-modal__title" id="helpModalTitle">Help</h2>
+            <button class="help-modal__close" onclick="closeHelp()" title="Close">✕</button>
+        </div>
+        <div class="help-modal__body" id="helpModalBody"></div>
+    </div>
+</div>
+
+    {% block scripts %}{% endblock %}
+</body>
+</html>

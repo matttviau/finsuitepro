@@ -1,0 +1,184 @@
+{% extends "base.html" %}
+{% block title %}Verify Identity — SwiftClarity Terminal™{% endblock %}
+{% block auth_content %}
+<div class="auth-card auth-card--wide">
+
+    <!-- Brand header (same as login) -->
+    <div class="auth-card__brand">
+        <img src="{{ url_for('static', filename='images/paralux_logo.png') }}" alt="Paralux" class="auth-card__logo">
+        <span class="auth-card__brand-name">SwiftClarity Terminal™</span>
+        <span class="auth-card__brand-sub">powered by Paralux Inc.</span>
+    </div>
+
+    <!-- Lock icon + title -->
+    <div class="tfa-icon">🔐</div>
+    <h2 style="margin:0 0 6px">2-Step Verification</h2>
+    <p class="tfa-subtitle">
+        A 6-digit code was sent to <strong class="tfa-email">{{ masked_email }}</strong>.<br>
+        Enter it below to complete your sign-in.
+    </p>
+
+    <!-- Flash messages -->
+    {% with messages = get_flashed_messages(with_categories=true) %}
+    {% if messages %}
+        {% for category, message in messages %}
+        <div class="flash flash--{{ category }}" style="margin-bottom:14px">{{ message }}</div>
+        {% endfor %}
+    {% endif %}
+    {% endwith %}
+
+    <!-- OTP form -->
+    <form method="POST" action="{{ url_for('verify_2fa', next=request.args.get('next','')) }}" id="tfaForm">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+        <input type="hidden" name="code" id="codeInput">
+
+        <!-- 6 digit boxes -->
+        <div class="otp-wrap">
+            <input class="otp-box" type="text" inputmode="numeric" pattern="[0-9]" maxlength="1" autocomplete="off" data-idx="0">
+            <input class="otp-box" type="text" inputmode="numeric" pattern="[0-9]" maxlength="1" autocomplete="off" data-idx="1">
+            <input class="otp-box" type="text" inputmode="numeric" pattern="[0-9]" maxlength="1" autocomplete="off" data-idx="2">
+            <div class="otp-sep">—</div>
+            <input class="otp-box" type="text" inputmode="numeric" pattern="[0-9]" maxlength="1" autocomplete="off" data-idx="3">
+            <input class="otp-box" type="text" inputmode="numeric" pattern="[0-9]" maxlength="1" autocomplete="off" data-idx="4">
+            <input class="otp-box" type="text" inputmode="numeric" pattern="[0-9]" maxlength="1" autocomplete="off" data-idx="5">
+        </div>
+
+        <button type="submit" class="btn btn--primary tfa-submit" id="submitBtn" disabled>
+            Verify &amp; Sign In
+        </button>
+    </form>
+
+    <!-- Expiry countdown -->
+    <div class="tfa-timer" id="timerWrap">
+        Code expires in <span id="countdown" class="tfa-countdown">10:00</span>
+    </div>
+
+    <!-- Resend -->
+    <form method="POST" action="{{ url_for('resend_2fa') }}" style="margin-top:18px">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+        <div style="text-align:center;font-size:13px;color:var(--text-dim)">
+            Didn't receive it?
+            <button type="submit" id="resendBtn" class="tfa-resend-btn">
+                Resend code
+            </button>
+            <span id="resendCooldown" style="display:none;color:var(--text-dim)"></span>
+        </div>
+    </form>
+
+    <!-- Back link -->
+    <div style="text-align:center;margin-top:20px">
+        <a href="{{ url_for('login') }}" style="font-size:12.5px;color:var(--text-dim);text-decoration:none;
+           transition:color 0.15s" onmouseover="this.style.color='var(--cyan)'" onmouseout="this.style.color='var(--text-dim)'">
+            ← Back to Sign In
+        </a>
+    </div>
+</div>
+
+<script>
+(function () {
+    const boxes     = Array.from(document.querySelectorAll('.otp-box'));
+    const codeInput = document.getElementById('codeInput');
+    const submitBtn = document.getElementById('submitBtn');
+    const form      = document.getElementById('tfaForm');
+
+    // ── OTP box logic ──────────────────────────────────────────────────────
+    function getCode() { return boxes.map(b => b.value).join(''); }
+
+    function checkComplete() {
+        const code = getCode();
+        const done = code.length === 6 && /^\d{6}$/.test(code);
+        submitBtn.disabled = !done;
+        if (done) {
+            codeInput.value = code;
+            submitBtn.classList.add('tfa-submit--ready');
+        } else {
+            submitBtn.classList.remove('tfa-submit--ready');
+        }
+        return done;
+    }
+
+    boxes.forEach((box, i) => {
+        box.addEventListener('input', e => {
+            // Strip non-digits, keep only first digit
+            box.value = box.value.replace(/\D/g, '').slice(0, 1);
+            if (box.value && i < 5) boxes[i + 1].focus();
+            checkComplete();
+        });
+
+        box.addEventListener('keydown', e => {
+            if (e.key === 'Backspace') {
+                if (!box.value && i > 0) {
+                    boxes[i - 1].value = '';
+                    boxes[i - 1].focus();
+                }
+                checkComplete();
+            }
+            if (e.key === 'ArrowLeft'  && i > 0) { e.preventDefault(); boxes[i - 1].focus(); }
+            if (e.key === 'ArrowRight' && i < 5) { e.preventDefault(); boxes[i + 1].focus(); }
+        });
+
+        box.addEventListener('paste', e => {
+            e.preventDefault();
+            const pasted = (e.clipboardData || window.clipboardData)
+                .getData('text').replace(/\D/g, '').slice(0, 6);
+            pasted.split('').forEach((ch, j) => {
+                if (boxes[j]) boxes[j].value = ch;
+            });
+            const next = Math.min(pasted.length, 5);
+            boxes[next].focus();
+            if (checkComplete()) setTimeout(() => form.submit(), 120);
+        });
+    });
+
+    // Auto-submit when all 6 filled via keyboard
+    boxes[5].addEventListener('input', () => {
+        if (checkComplete()) setTimeout(() => form.submit(), 180);
+    });
+
+    // Focus first box on load
+    boxes[0].focus();
+
+    // ── Countdown timer ────────────────────────────────────────────────────
+    let secs = 10 * 60;   // 10 minutes in seconds
+    const countEl    = document.getElementById('countdown');
+    const timerWrap  = document.getElementById('timerWrap');
+    const resendBtn  = document.getElementById('resendBtn');
+    const resendCool = document.getElementById('resendCooldown');
+
+    const tick = setInterval(() => {
+        secs--;
+        if (secs <= 0) {
+            clearInterval(tick);
+            countEl.textContent = '0:00';
+            countEl.style.color = 'var(--red)';
+            timerWrap.innerHTML = '<span style="color:var(--red);font-size:13px">⚠ Code has expired. Please request a new one.</span>';
+            submitBtn.disabled = true;
+            return;
+        }
+        const m = Math.floor(secs / 60);
+        const s = String(secs % 60).padStart(2, '0');
+        countEl.textContent = `${m}:${s}`;
+        if (secs <= 60) countEl.style.color = 'var(--red)';
+        else if (secs <= 180) countEl.style.color = 'var(--gold)';
+    }, 1000);
+
+    // ── Resend cooldown (30 s) ─────────────────────────────────────────────
+    let resendCoolSecs = 0;
+    const resendTimer = () => {
+        resendCoolSecs = 30;
+        resendBtn.style.display = 'none';
+        resendCool.style.display = '';
+        const ri = setInterval(() => {
+            resendCoolSecs--;
+            resendCool.textContent = `(resend in ${resendCoolSecs}s)`;
+            if (resendCoolSecs <= 0) {
+                clearInterval(ri);
+                resendBtn.style.display = '';
+                resendCool.style.display = 'none';
+            }
+        }, 1000);
+    };
+    document.querySelector('form[action*="resend"]').addEventListener('submit', resendTimer);
+})();
+</script>
+{% endblock %}
