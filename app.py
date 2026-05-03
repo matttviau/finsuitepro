@@ -65,9 +65,18 @@ app = Flask(__name__)
 app.json_provider_class = _NaNSafeProvider
 app.json = _NaNSafeProvider(app)
 app.config['SECRET_KEY'] = os.environ.get('SECRET_KEY', secrets.token_hex(32))
-app.config['SQLALCHEMY_DATABASE_URI'] = os.environ.get(
-    'DATABASE_URL', 'sqlite:///finsuite.db'
-).replace('postgres://', 'postgresql://')  # fix Render/Railway legacy URL scheme
+
+# Build database URI — prefers DATABASE_URL env var (Railway/Render Postgres).
+# Falls back to SQLite stored beside this file so it works locally and on
+# platforms without a persistent volume (path is absolute to avoid CWD issues).
+_db_url = os.environ.get('DATABASE_URL', '')
+if _db_url:
+    _db_url = _db_url.replace('postgres://', 'postgresql://')  # fix legacy scheme
+else:
+    _instance_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'instance')
+    os.makedirs(_instance_dir, exist_ok=True)
+    _db_url = f"sqlite:///{os.path.join(_instance_dir, 'finsuite.db')}"
+app.config['SQLALCHEMY_DATABASE_URI'] = _db_url
 app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
 app.config['WTF_CSRF_TIME_LIMIT'] = None
 
