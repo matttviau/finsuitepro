@@ -32,7 +32,6 @@ from flask import (
     Flask, render_template, redirect, url_for, flash, request,
     jsonify, session, abort
 )
-from flask_mail import Mail, Message
 from flask.json.provider import DefaultJSONProvider
 from flask_sqlalchemy import SQLAlchemy
 from flask_login import (
@@ -65,41 +64,22 @@ class _NaNSafeProvider(DefaultJSONProvider):
 app = Flask(__name__)
 app.json_provider_class = _NaNSafeProvider
 app.json = _NaNSafeProvider(app)
-app.config['SECRET_KEY'] = secrets.token_hex(32)
-app.config['SQLALCHEMY_DATABASE_URI'] = 'sqlite:///finsuite.db'
+app.config['SECRET_KEY'] = os.environ.get('SECRET_KEY', secrets.token_hex(32))
+app.config['SQLALCHEMY_DATABASE_URI'] = os.environ.get(
+    'DATABASE_URL', 'sqlite:///finsuite.db'
+).replace('postgres://', 'postgresql://')  # fix Render/Railway legacy URL scheme
 app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
 app.config['WTF_CSRF_TIME_LIMIT'] = None
-
-# ── Email / 2FA configuration ──────────────────────────────────────────────
-# Set these environment variables before running:
-#   MAIL_USERNAME   → your Gmail address (or SMTP username)
-#   MAIL_PASSWORD   → Gmail App Password (not your regular password)
-#                     Enable at: myaccount.google.com → Security → App Passwords
-#   MAIL_SERVER     → SMTP host (default: smtp.gmail.com)
-#   MAIL_PORT       → SMTP port  (default: 587)
-# If MAIL_USERNAME is not set the app still runs but skips sending email
-# and shows the code on-screen (development mode).
-app.config['MAIL_SERVER']         = os.environ.get('MAIL_SERVER', 'smtp.gmail.com')
-app.config['MAIL_PORT']           = int(os.environ.get('MAIL_PORT', 587))
-app.config['MAIL_USE_TLS']        = True
-app.config['MAIL_USE_SSL']        = False
-app.config['MAIL_USERNAME']       = os.environ.get('MAIL_USERNAME', '')
-app.config['MAIL_PASSWORD']       = os.environ.get('MAIL_PASSWORD', '')
-app.config['MAIL_DEFAULT_SENDER'] = (
-    'SwiftClarity Terminal™',
-    os.environ.get('MAIL_USERNAME', 'noreply@paralux.io')
-)
 
 db      = SQLAlchemy(app)
 bcrypt  = Bcrypt(app)
 csrf    = CSRFProtect(app)
-mail    = Mail(app)
 login_manager = LoginManager(app)
 login_manager.login_view = 'login'
 login_manager.login_message_category = 'info'
 
-API_KEY    = "tnGHxeqXAnkqoV6pUL2XFjDStejcjhb2"
-FRED_API_KEY = "fcdca4c8a04957bdcaa22c32f1e8eb34"
+API_KEY      = os.environ.get('POLYGON_API_KEY', 'tnGHxeqXAnkqoV6pUL2XFjDStejcjhb2')
+FRED_API_KEY = os.environ.get('FRED_API_KEY', 'fcdca4c8a04957bdcaa22c32f1e8eb34')
 # ═══════════════════════════════════════════════════════════════════════════════
 #  DATABASE MODELS
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -2592,160 +2572,6 @@ def register():
     return render_template('register.html', form=form)
 
 
-# ═══════════════════════════════════════════════════════════════════════════════
-#  TWO-FACTOR AUTHENTICATION HELPERS
-# ═══════════════════════════════════════════════════════════════════════════════
-
-def _generate_otp() -> str:
-    """Return a zero-padded 6-digit OTP string."""
-    return str(secrets.randbelow(1_000_000)).zfill(6)
-
-
-def _mask_email(email: str) -> str:
-    """Partially obscure an email address for display, e.g. j***@example.com."""
-    local, _, domain = email.partition('@')
-    if len(local) <= 2:
-        masked = local[0] + '***'
-    else:
-        masked = local[0] + '*' * (len(local) - 2) + local[-1]
-    return f"{masked}@{domain}"
-
-
-_2FA_EMAIL_HTML = """\
-<!DOCTYPE html>
-<html lang="en">
-<head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>SwiftClarity — Verification Code</title></head>
-<body style="margin:0;padding:0;background:#060E1C;font-family:'Helvetica Neue',Arial,sans-serif;">
-  <table width="100%" cellpadding="0" cellspacing="0" style="background:#060E1C;padding:40px 16px;">
-    <tr><td align="center">
-      <table width="560" cellpadding="0" cellspacing="0"
-             style="background:#0C1929;border:1px solid #1E3050;border-radius:16px;overflow:hidden;max-width:560px;width:100%">
-
-        <!-- Header band -->
-        <tr>
-          <td style="background:linear-gradient(135deg,#061628 0%,#0A2040 100%);padding:32px 40px 28px;border-bottom:1px solid #1E3050">
-            <table width="100%" cellpadding="0" cellspacing="0">
-              <tr>
-                <td>
-                  <div style="font-size:11px;font-weight:700;letter-spacing:3px;color:#00D4AA;text-transform:uppercase;margin-bottom:6px">
-                    PARALUX INC.
-                  </div>
-                  <div style="font-size:22px;font-weight:800;color:#C8E4FF;letter-spacing:-0.5px">
-                    SwiftClarity Terminal™
-                  </div>
-                  <div style="font-size:12px;color:#3B6080;margin-top:4px">Financial Intelligence Platform</div>
-                </td>
-                <td align="right" valign="middle">
-                  <div style="width:44px;height:44px;background:#00D4AA15;border:1.5px solid #00D4AA40;
-                              border-radius:12px;text-align:center;line-height:44px;font-size:22px">🔐</div>
-                </td>
-              </tr>
-            </table>
-          </td>
-        </tr>
-
-        <!-- Body -->
-        <tr>
-          <td style="padding:36px 40px 28px">
-            <p style="margin:0 0 8px;font-size:15px;font-weight:600;color:#C8E4FF">
-              Hello, {username}
-            </p>
-            <p style="margin:0 0 28px;font-size:13.5px;color:#527090;line-height:1.65">
-              A sign-in attempt was made to your SwiftClarity Terminal account.
-              Use the verification code below to complete your login.
-            </p>
-
-            <!-- Code box -->
-            <div style="background:#060E1C;border:1.5px solid #1E3050;border-radius:12px;padding:28px;text-align:center;margin-bottom:28px">
-              <div style="font-size:11px;font-weight:700;letter-spacing:2px;color:#527090;text-transform:uppercase;margin-bottom:14px">
-                Your Verification Code
-              </div>
-              <div style="font-size:42px;font-weight:800;letter-spacing:14px;color:#00D4AA;
-                          font-family:'Courier New',Courier,monospace;padding-left:14px">
-                {code}
-              </div>
-              <div style="margin-top:14px;font-size:12px;color:#3B6080">
-                Expires in <strong style="color:#FFB347">10 minutes</strong> &nbsp;·&nbsp; Single use
-              </div>
-            </div>
-
-            <!-- Security warning -->
-            <div style="background:#FF3D6B0D;border:1px solid #FF3D6B30;border-radius:10px;
-                        padding:14px 18px;margin-bottom:28px">
-              <table cellpadding="0" cellspacing="0">
-                <tr>
-                  <td style="font-size:18px;padding-right:12px;vertical-align:top;padding-top:1px">🛡</td>
-                  <td>
-                    <div style="font-size:12.5px;font-weight:700;color:#FF3D6B;margin-bottom:4px">
-                      Security Notice
-                    </div>
-                    <div style="font-size:12px;color:#7A4050;line-height:1.6">
-                      <strong style="color:#C8A0A8">Never share this code with anyone.</strong>
-                      Paralux and SwiftClarity staff will
-                      <strong style="color:#C8A0A8">never</strong> ask for your verification code.
-                      If you did not attempt to sign in, your account may be at risk — change your
-                      password immediately.
-                    </div>
-                  </td>
-                </tr>
-              </table>
-            </div>
-
-            <p style="margin:0;font-size:12px;color:#3B6080;line-height:1.6">
-              This code was requested for the account associated with
-              <strong style="color:#527090">{email}</strong>.
-              If this wasn't you, please ignore this email and secure your account.
-            </p>
-          </td>
-        </tr>
-
-        <!-- Footer -->
-        <tr>
-          <td style="background:#060E1C;border-top:1px solid #1E3050;padding:18px 40px;text-align:center">
-            <div style="font-size:11px;color:#2A4060;line-height:1.7">
-              © {year} Paralux Inc. — SwiftClarity Terminal™<br>
-              This is an automated security email. Please do not reply.
-            </div>
-          </td>
-        </tr>
-
-      </table>
-    </td></tr>
-  </table>
-</body>
-</html>
-"""
-
-
-def _send_2fa_email(to_email: str, username: str, code: str) -> bool:
-    """
-    Send the 2FA code email.
-    Returns True on success, False on failure.
-    If MAIL_USERNAME is not configured, prints the code to stdout (dev mode).
-    """
-    if not app.config.get('MAIL_USERNAME'):
-        # Dev mode: print to console instead of sending
-        print(f"\n{'='*50}\n2FA CODE for {to_email}: {code}\n{'='*50}\n")
-        return True          # treat as success so flow continues
-
-    html_body = _2FA_EMAIL_HTML.format(
-        username=username or to_email.split('@')[0],
-        code=code,
-        email=to_email,
-        year=datetime.utcnow().year,
-    )
-    try:
-        msg = Message(
-            subject='SwiftClarity Terminal™ — Your Verification Code',
-            recipients=[to_email],
-            html=html_body,
-        )
-        mail.send(msg)
-        return True
-    except Exception as exc:
-        app.logger.error(f"2FA email failed for {to_email}: {exc}")
-        return False
 
 
 @app.route('/login', methods=['GET', 'POST'])
@@ -2756,110 +2582,13 @@ def login():
     if form.validate_on_submit():
         user = User.query.filter_by(email=form.email.data).first()
         if user and user.check_password(form.password.data):
-            # ── Generate & store OTP in session ──
-            code    = _generate_otp()
-            expires = (datetime.utcnow() + timedelta(minutes=10)).isoformat()
-            session['_2fa'] = {
-                'code':     code,
-                'expires':  expires,
-                'user_id':  user.id,
-                'remember': form.remember.data,
-                'attempts': 0,
-            }
-            # ── Send email ──
-            ok = _send_2fa_email(user.email, user.first_name or user.username, code)
-            if not ok:
-                flash('Unable to send verification email. Please try again.', 'danger')
-                session.pop('_2fa', None)
-                return render_template('login.html', form=form)
-
-            next_page = request.args.get('next', '')
-            return redirect(url_for('verify_2fa', next=next_page))
-        flash('Invalid email or password.', 'danger')
-    return render_template('login.html', form=form)
-
-
-@app.route('/verify-2fa', methods=['GET', 'POST'])
-def verify_2fa():
-    """Second step of login: verify the OTP sent by email."""
-    tfa = session.get('_2fa')
-    if not tfa:
-        flash('Session expired. Please sign in again.', 'warning')
-        return redirect(url_for('login'))
-
-    user = User.query.get(tfa['user_id'])
-    if not user:
-        session.pop('_2fa', None)
-        return redirect(url_for('login'))
-
-    masked = _mask_email(user.email)
-
-    if request.method == 'POST':
-        submitted = request.form.get('code', '').strip().replace(' ', '')
-
-        # ── Check expiry ──
-        try:
-            expires = datetime.fromisoformat(tfa['expires'])
-        except Exception:
-            expires = datetime.utcnow() - timedelta(seconds=1)
-
-        if datetime.utcnow() > expires:
-            session.pop('_2fa', None)
-            flash('Verification code has expired. Please sign in again.', 'warning')
-            return redirect(url_for('login'))
-
-        # ── Check attempt limit ──
-        tfa['attempts'] = tfa.get('attempts', 0) + 1
-        session['_2fa'] = tfa                     # write back updated attempt count
-        if tfa['attempts'] > 5:
-            session.pop('_2fa', None)
-            flash('Too many incorrect attempts. Please sign in again.', 'danger')
-            return redirect(url_for('login'))
-
-        # ── Validate code ──
-        if submitted == tfa['code']:
-            session.pop('_2fa', None)
             user.last_login = datetime.utcnow()
             db.session.commit()
-            login_user(user, remember=tfa.get('remember', False))
+            login_user(user, remember=form.remember.data)
             next_page = request.args.get('next', '') or url_for('dashboard')
             return redirect(next_page)
-        else:
-            remaining = max(0, 5 - tfa['attempts'])
-            flash(f'Incorrect code. {remaining} attempt{"s" if remaining != 1 else ""} remaining.', 'danger')
-
-    return render_template('verify_2fa.html', masked_email=masked)
-
-
-@app.route('/resend-2fa', methods=['POST'])
-def resend_2fa():
-    """Resend a fresh OTP to the user's email."""
-    tfa = session.get('_2fa')
-    if not tfa:
-        return redirect(url_for('login'))
-
-    user = User.query.get(tfa['user_id'])
-    if not user:
-        session.pop('_2fa', None)
-        return redirect(url_for('login'))
-
-    code    = _generate_otp()
-    expires = (datetime.utcnow() + timedelta(minutes=10)).isoformat()
-    session['_2fa'] = {
-        'code':     code,
-        'expires':  expires,
-        'user_id':  user.id,
-        'remember': tfa.get('remember', False),
-        'attempts': 0,
-    }
-
-    ok = _send_2fa_email(user.email, user.first_name or user.username, code)
-    if ok:
-        flash('A new verification code has been sent.', 'success')
-    else:
-        flash('Could not send email. Please try again.', 'danger')
-
-    return redirect(url_for('verify_2fa'))
+        flash('Invalid email or password.', 'danger')
+    return render_template('login.html', form=form)
 
 
 @app.route('/logout')
