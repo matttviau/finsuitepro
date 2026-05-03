@@ -76,9 +76,25 @@ else:
     _instance_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'instance')
     os.makedirs(_instance_dir, exist_ok=True)
     _db_url = f"sqlite:///{os.path.join(_instance_dir, 'finsuite.db')}"
+
+_is_postgres = _db_url.startswith('postgresql')
 app.config['SQLALCHEMY_DATABASE_URI'] = _db_url
 app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
 app.config['WTF_CSRF_TIME_LIMIT'] = None
+
+# Connection pool settings — more robust for Postgres on Railway
+if _is_postgres:
+    app.config['SQLALCHEMY_ENGINE_OPTIONS'] = {
+        'pool_pre_ping': True,       # verify connection before use
+        'pool_recycle': 300,         # recycle connections every 5 min
+        'pool_size': 5,
+        'max_overflow': 10,
+        'connect_args': {'connect_timeout': 10},
+    }
+else:
+    app.config['SQLALCHEMY_ENGINE_OPTIONS'] = {
+        'connect_args': {'check_same_thread': False},
+    }
 
 db      = SQLAlchemy(app)
 bcrypt  = Bcrypt(app)
@@ -2566,18 +2582,37 @@ def index():
     return redirect(url_for('login'))
 
 
+@app.route('/health')
+def health():
+    """Health check endpoint — useful for verifying DB connectivity on Railway."""
+    try:
+        db.session.execute(db.text('SELECT 1'))
+        db_ok = True
+        db_msg = app.config['SQLALCHEMY_DATABASE_URI'].split('@')[-1] if '@' in app.config['SQLALCHEMY_DATABASE_URI'] else 'sqlite'
+    except Exception as exc:
+        db_ok = False
+        db_msg = str(exc)
+    status = 200 if db_ok else 500
+    return jsonify({'status': 'ok' if db_ok else 'error', 'db': db_msg}), status
+
+
 @app.route('/register', methods=['GET', 'POST'])
 def register():
     if current_user.is_authenticated:
         return redirect(url_for('dashboard'))
     form = RegistrationForm()
     if form.validate_on_submit():
-        user = User(username=form.username.data, email=form.email.data)
-        user.set_password(form.password.data)
-        db.session.add(user)
-        db.session.commit()
-        flash('Account created! You can now sign in.', 'success')
-        return redirect(url_for('login'))
+        try:
+            user = User(username=form.username.data, email=form.email.data)
+            user.set_password(form.password.data)
+            db.session.add(user)
+            db.session.commit()
+            flash('Account created! You can now sign in.', 'success')
+            return redirect(url_for('login'))
+        except Exception as exc:
+            db.session.rollback()
+            app.logger.error(f'Register error: {exc}')
+            flash('Could not create account — please try again.', 'danger')
     return render_template('register.html', form=form)
 
 
