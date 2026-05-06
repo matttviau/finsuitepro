@@ -1,5 +1,5 @@
 """
-FinSuite Pro™ v3.0 — Flask Web Application
+FinSuite — Paralux Analytics Web Application
 ============================================
 Full-featured financial analysis terminal with:
   - User authentication (register, login, logout, profile management)

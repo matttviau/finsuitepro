@@ -1,4 +1,4 @@
-# FinSuite Pro™
+# FinSuite by Paralux Analytics
 
 A full-featured financial analysis terminal built with Flask.
 

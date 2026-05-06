@@ -1,11 +1,11 @@
 {% extends "base.html" %}
-{% block title %}Sign In — SwiftClarity Terminal™{% endblock %}
+{% block title %}Sign In — FinSuite{% endblock %}
 {% block auth_content %}
 <div class="auth-card">
     <div class="auth-card__brand">
         <img src="{{ url_for('static', filename='images/paralux_logo.png') }}" alt="Paralux" class="auth-card__logo">
-        <span class="auth-card__brand-name">SwiftClarity Terminal™</span>
-        <span class="auth-card__brand-sub">powered by Paralux Inc.</span>
+        <span class="auth-card__brand-name">FinSuite</span>
+        <span class="auth-card__brand-sub">Paralux Analytics</span>
     </div>
     <h2>Sign In</h2>
     {% with messages = get_flashed_messages(with_categories=true) %}
