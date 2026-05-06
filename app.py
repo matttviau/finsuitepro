@@ -1,5 +1,5 @@
 """
-FinSuite — Paralux Analytics Web Application
+Paralux Terminal — Web Application
 ============================================
 Full-featured financial analysis terminal with:
   - User authentication (register, login, logout, profile management)
@@ -437,7 +437,7 @@ def fetch_latest_price(ticker: str) -> dict:
         f"?apiKey={API_KEY}"
     )
     try:
-        r = _SESSION.get(url, headers={"User-Agent": "FinSuitePro/3.0"}, timeout=10)
+        r = _SESSION.get(url, headers={"User-Agent": "ParaluxTerminal/3.0"}, timeout=10)
         if r.status_code == 200:
             data = r.json().get("ticker", {})
             day = data.get("day", {})
@@ -480,7 +480,7 @@ def fetch_news(ticker: str, limit: int = 50) -> list:
         f"&limit={limit}&apiKey={API_KEY}"
     )
     try:
-        r = _SESSION.get(url, headers={"User-Agent": "FinSuitePro/3.0"}, timeout=15)
+        r = _SESSION.get(url, headers={"User-Agent": "ParaluxTerminal/3.0"}, timeout=15)
         r.raise_for_status()
         return r.json().get("results", [])
     except Exception:
@@ -674,7 +674,7 @@ def _check_alert_condition(alert, df: pd.DataFrame):
 class FundamentalData:
     SEC_TICKERS_URL = "https://www.sec.gov/files/company_tickers.json"
     SEC_FACTS_URL = "https://data.sec.gov/api/xbrl/companyfacts/CIK{cik}.json"
-    HEADERS = {"User-Agent": "Mozilla/5.0 (compatible; FinSuitePro/3.0; contact@example.com)"}
+    HEADERS = {"User-Agent": "Mozilla/5.0 (compatible; ParaluxTerminal/3.0; contact@example.com)"}
 
     def __init__(self):
         self._session = _polygon_session()
@@ -3163,7 +3163,7 @@ def api_fund_ai_report(ticker):
 
         # ── 5. Fetch document (cap at 1.4 MB to capture MD&A in large 10-Ks) ──
         headers = {
-            'User-Agent': 'FinSuite/1.0 admin@example.com',
+            'User-Agent': 'ParaluxTerminal/1.0 admin@example.com',
             'Accept-Encoding': 'gzip, deflate',
         }
         _FD._throttle()

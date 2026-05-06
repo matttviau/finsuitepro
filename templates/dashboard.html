@@ -1,5 +1,5 @@
 {% extends "base.html" %}
-{% block title %}Dashboard — FinSuite{% endblock %}
+{% block title %}Dashboard — Paralux Terminal{% endblock %}
 {% block content %}
 <div class="home-hero" style="background-image: url('{{ url_for('static', filename='images/paralux_theme.png') }}');">
     <div class="home-hero__overlay"></div>
@@ -10,7 +10,7 @@
     <div class="home-hero__corner home-hero__corner--br"></div>
     <div class="home-hero__content">
     <img src="{{ url_for('static', filename='images/paralux_logo.png') }}" alt="Paralux" class="home-hero__logo">
-    <div class="home-hero__title">FinSuite</div>
+    <div class="home-hero__title">Paralux Terminal</div>
     <div class="home-hero__sub">Financial Analysis Dashboard · Welcome back, {{ current_user.username }}</div>
     <div class="home-modules">
         <a href="{{ url_for('economic') }}" class="home-module">

@@ -1,8 +1,8 @@
-# FinSuite by Paralux Analytics
+# Paralux Terminal
 
 A full-featured financial analysis terminal built with Flask.
 
-![FinSuite](static/images/paralux_logo.png)
+![Paralux Terminal](static/images/paralux_logo.png)
 
 ## Features
 
