@@ -2389,13 +2389,18 @@ function renderEcon(){
     document.getElementById('econ-chart-title').textContent =
         `${d.series_id} — ${d.label}` + (_econNorm ? '  (Indexed: 100 = period start)' : `  (${d.units})`);
 
-    // ── Recession shapes ──────────────────────────────────────────────────
-    const recShapes = _econRec ? RECESSIONS.map(([s,e]) => ({
-        type: 'rect', xref:'x', yref:'paper',
-        x0: s, x1: e, y0: 0, y1: 1,
-        fillcolor: 'rgba(255,255,255,0.035)',
-        line: { width: 0 }, layer: 'below'
-    })) : [];
+    // ── Recession shapes — clipped to visible window ─────────────────────
+    const xMin = sd[0], xMax = sd[sd.length - 1];
+    const recShapes = _econRec ? RECESSIONS
+        .filter(([s, e]) => e > xMin && s < xMax)          // only overlapping recessions
+        .map(([s, e]) => ({
+            type: 'rect', xref:'x', yref:'paper',
+            x0: s < xMin ? xMin : s,                        // clip left edge
+            x1: e > xMax ? xMax : e,                        // clip right edge
+            y0: 0, y1: 1,
+            fillcolor: 'rgba(255,255,255,0.035)',
+            line: { width: 0 }, layer: 'below'
+        })) : [];
 
     const hex    = d.color;
     const isBar  = _econType === 'bar';
@@ -2467,7 +2472,7 @@ function renderEcon(){
         shapes: recShapes,
         showlegend: traces.length > 1,
         legend: { font:{size:11,color:'#8BAFC7'}, bgcolor:'rgba(0,0,0,0)', x:0.01, y:0.99 },
-        xaxis: { ...axBase, type:'date', rangeslider:{visible:false} },
+        xaxis: { ...axBase, type:'date', range:[xMin, xMax], rangeslider:{visible:false} },
         yaxis: { ...axBase, hoverformat:'.4s', automargin:true,
             title: _econNorm ? {text:'Index (100 = start)',font:{size:10,color:'#527090'}} : undefined },
         hovermode: 'x unified',
@@ -2514,7 +2519,7 @@ function renderEcon(){
             margin:{l:60,r:24,t:14,b:50},
             autosize:true, showlegend:false,
             annotations: yoyAnnotations,
-            xaxis:{...axBase, type:'date', rangeslider:{visible:false}},
+            xaxis:{...axBase, type:'date', range:[xMin, xMax], rangeslider:{visible:false}},
             yaxis:{...axBase, ticksuffix:'%', hoverformat:'+.2f', zeroline:true, zerolinecolor:'#1F3050', zerolinewidth:1},
             hovermode:'x unified',
             hoverlabel:{bgcolor:'#0C1929',bordercolor:'#152038',font:{family:"'DM Sans', sans-serif",size:11,color:'#C8E4FF'}},
@@ -2596,7 +2601,7 @@ function renderEconDashboard(d){
                 paper_bgcolor:'rgba(0,0,0,0)', plot_bgcolor:'rgba(0,0,0,0)',
                 margin:{l:0,r:0,t:4,b:0}, autosize:true,
                 showlegend:false,
-                xaxis:{visible:false, type:'date'},
+                xaxis:{visible:false, type:'date', range:[sd[0], sd[sd.length-1]]},
                 yaxis:{visible:false},
             }, {responsive:true, displaylogo:false, staticPlot:true});
         }, 50);
