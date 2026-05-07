@@ -59,22 +59,22 @@
         <a href="{{ url_for('dashboard') }}" class="sidebar__item {% if request.endpoint == 'dashboard' %}active{% endif %}">
             <span class="sidebar__dot" style="color:var(--cyan)">●</span> Home
         </a>
-        <a href="{{ url_for('economic') }}" class="sidebar__item {% if request.endpoint == 'economic' %}active{% endif %}">
+        <a href="{{ url_for('economic') }}" class="sidebar__item sidebar__item--red {% if request.endpoint == 'economic' %}active{% endif %}">
             <span class="sidebar__dot" style="color:var(--red)">●</span> Economic Data
         </a>
-        <a href="{{ url_for('technical') }}" class="sidebar__item {% if request.endpoint == 'technical' %}active{% endif %}">
+        <a href="{{ url_for('technical') }}" class="sidebar__item sidebar__item--blue {% if request.endpoint == 'technical' %}active{% endif %}">
             <span class="sidebar__dot" style="color:var(--blue)">●</span> Technical Analysis
         </a>
-        <a href="{{ url_for('fundamentals') }}" class="sidebar__item {% if request.endpoint == 'fundamentals' %}active{% endif %}">
+        <a href="{{ url_for('fundamentals') }}" class="sidebar__item sidebar__item--gold {% if request.endpoint == 'fundamentals' %}active{% endif %}">
             <span class="sidebar__dot" style="color:var(--gold)">●</span> SEC Fundamentals
         </a>
-        <a href="{{ url_for('correlation') }}" class="sidebar__item {% if request.endpoint == 'correlation' %}active{% endif %}">
+        <a href="{{ url_for('correlation') }}" class="sidebar__item sidebar__item--orange {% if request.endpoint == 'correlation' %}active{% endif %}">
             <span class="sidebar__dot" style="color:var(--orange)">●</span> Correlation Matrix
         </a>
-        <a href="{{ url_for('news') }}" class="sidebar__item {% if request.endpoint == 'news' %}active{% endif %}">
+        <a href="{{ url_for('news') }}" class="sidebar__item sidebar__item--purple {% if request.endpoint == 'news' %}active{% endif %}">
             <span class="sidebar__dot" style="color:var(--purple)">●</span> News & Sentiment
         </a>
-        <a href="{{ url_for('listings') }}" class="sidebar__item {% if request.endpoint == 'listings' %}active{% endif %}">
+        <a href="{{ url_for('listings') }}" class="sidebar__item sidebar__item--green {% if request.endpoint == 'listings' %}active{% endif %}">
             <span class="sidebar__dot" style="color:var(--green)">●</span> Listings Explorer
         </a>
         <div class="sidebar__divider"></div>

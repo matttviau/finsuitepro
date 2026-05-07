@@ -12,23 +12,23 @@
     <div class="home-hero__title">Paralux Terminal</div>
     <div class="home-hero__sub">Financial Analysis Dashboard · Welcome back, {{ current_user.username }}</div>
     <div class="home-modules">
-        <a href="{{ url_for('economic') }}" class="home-module">
+        <a href="{{ url_for('economic') }}" class="home-module home-module--red">
             <div class="home-module__name" style="color:var(--red)">Economic Data</div>
             <div class="home-module__desc">FRED macro indicators</div>
         </a>
-        <a href="{{ url_for('technical') }}" class="home-module">
+        <a href="{{ url_for('technical') }}" class="home-module home-module--blue">
             <div class="home-module__name" style="color:var(--blue)">Technical</div>
             <div class="home-module__desc">SMA · MACD · BB · Stoch</div>
         </a>
-        <a href="{{ url_for('fundamentals') }}" class="home-module">
+        <a href="{{ url_for('fundamentals') }}" class="home-module home-module--gold">
             <div class="home-module__name" style="color:var(--gold)">Fundamentals</div>
             <div class="home-module__desc">SEC XBRL · Ratios</div>
         </a>
-        <a href="{{ url_for('correlation') }}" class="home-module">
+        <a href="{{ url_for('correlation') }}" class="home-module home-module--orange">
             <div class="home-module__name" style="color:var(--orange)">Correlation</div>
             <div class="home-module__desc">Return heatmap</div>
         </a>
-        <a href="{{ url_for('news') }}" class="home-module">
+        <a href="{{ url_for('news') }}" class="home-module home-module--purple">
             <div class="home-module__name" style="color:var(--purple)">News & Sentiment</div>
             <div class="home-module__desc">LLM-powered feed</div>
         </a>
