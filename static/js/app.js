@@ -1484,9 +1484,17 @@ function runFund() {
                 `${d.ticker} — ${d.line_items.length} XBRL line items loaded`;
             _renderCompanyInfo(d.info || {}, d.ticker);
             _fundPopulateSelects(d.line_items);
-            /* auto-load ratios + income statement */
+            /* persist ticker immediately so panel navigation always restores it.
+               loadFundSeries() will overwrite this with the full state (item, opts…)
+               once a series is charted. */
+            const _existing = _loadState('fund') || {};
+            _saveState('fund', { ..._existing, ticker });
+            /* restore statement tab + period from saved state if available */
+            if (_existing.stmtType)   _stmtType   = _existing.stmtType;
+            if (_existing.stmtPeriod) _stmtPeriod = _existing.stmtPeriod;
+            /* auto-load ratios + active statement tab */
             loadRatios();
-            loadStatements('income', document.getElementById('stmt-btn-income'));
+            loadStatements(_stmtType, document.getElementById('stmt-btn-' + _stmtType));
             /* restore saved chart state when navigating back */
             if (window._fundRestoreItem) {
                 const rs = window._fundRestoreItem;
@@ -1628,6 +1636,8 @@ async function loadFundSeries() {
         compareMode: document.getElementById('fund-compare-mode')?.checked || false,
         item2:       document.getElementById('fund-item-2')?.value  || '',
         item3:       document.getElementById('fund-item-3')?.value  || '',
+        stmtType:    _stmtType,
+        stmtPeriod:  _stmtPeriod,
     });
 
     const compareOn = document.getElementById('fund-compare-mode')?.checked;
@@ -1998,6 +2008,9 @@ function loadStatements(type, btn) {
         const b = document.getElementById('stmt-btn-' + t);
         if (b) b.classList.toggle('active', t === type);
     });
+    /* persist active tab so it survives panel navigation */
+    const _ex = _loadState('fund') || {};
+    _saveState('fund', { ..._ex, stmtType: _stmtType, stmtPeriod: _stmtPeriod });
     document.getElementById('stmt-loading').style.display = 'flex';
     document.getElementById('stmt-content').style.display = 'none';
     fetch(`/api/fundamentals/${fundData.ticker}/statements?type=${type}&period=${_stmtPeriod}`)
