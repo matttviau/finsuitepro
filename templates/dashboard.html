@@ -48,6 +48,7 @@
                    onkeydown="if(event.key==='Enter')wlAdd()">
             <button class="btn btn--sm btn--secondary" onclick="wlAdd()">+ Add</button>
         </div>
+        <div id="wl-error" class="wl-error" style="display:none"></div>
         <div id="watchlist-container">
             <div class="loading"><div class="spinner"></div> Loading prices...</div>
         </div>
@@ -65,8 +66,7 @@
         </div>
         {% else %}
         <div class="empty-state">
-            <div class="empty-state__icon">📊</div>
-            <div class="empty-state__text">No recent searches yet. Start exploring!</div>
+            <div class="empty-state__text">No recent searches yet. Start exploring.</div>
         </div>
         {% endif %}
     </div>
@@ -132,7 +132,13 @@ function wlAdd() {
     })
     .then(r => r.json())
     .then(d => {
-        if (d.error) { alert(d.error); return; }
+        if (d.error) {
+            const errEl = document.getElementById('wl-error');
+            errEl.textContent = d.error;
+            errEl.style.display = 'block';
+            setTimeout(() => { errEl.style.display = 'none'; }, 4000);
+            return;
+        }
         input.value = '';
         loadWatchlist();
     });

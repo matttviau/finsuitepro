@@ -4,6 +4,12 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>{% block title %}Paralux Terminal{% endblock %}</title>
+    <meta name="description" content="Paralux Terminal — Professional financial analysis for serious investors and analysts.">
+    <meta name="theme-color" content="#04050B">
+    <meta property="og:title" content="Paralux Terminal">
+    <meta property="og:description" content="Institutional-grade technical analysis, SEC fundamentals, macro data, and market intelligence — all in one terminal.">
+    <meta property="og:type" content="website">
+    <link rel="icon" href="{{ url_for('static', filename='images/favicon.svg') }}" type="image/svg+xml">
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link href="https://fonts.googleapis.com/css2?family=DM+Sans:ital,opsz,wght@0,9..40,300;0,9..40,400;0,9..40,500;0,9..40,600;0,9..40,700&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
     <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
@@ -20,7 +26,19 @@
             <img src="{{ url_for('static', filename='images/paralux_logo.png') }}" alt="Paralux" class="topnav__logo">
             <span class="topnav__title">Paralux Terminal</span>
         </div>
-        <div class="topnav__center">Financial Analysis Dashboard</div>
+        {% set _labels = {
+            'dashboard':   'Overview',
+            'technical':   'Technical Analysis',
+            'fundamentals':'SEC Fundamentals',
+            'correlation': 'Correlation Matrix',
+            'economic':    'Economic Data',
+            'news':        'News & Sentiment',
+            'signal_page': 'Signal Analysis',
+            'alerts_page': 'Alert Center',
+            'listings':    'Listings Explorer',
+            'profile':     'Profile & Settings',
+        } %}
+        <div class="topnav__center">{{ _labels.get(request.endpoint, 'Paralux Terminal') }}</div>
         <div class="topnav__right">
             <span class="topnav__clock" id="clock"></span>
             <span class="topnav__status">● Connected</span>
@@ -64,13 +82,15 @@
             ◆ Signal Analysis
         </a>
         <a href="{{ url_for('alerts_page') }}" class="sidebar__item sidebar__alerts {% if request.endpoint == 'alerts_page' %}active{% endif %}">
-            🔔 Alert Center
+            <svg class="sidebar__svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.73 21a2 2 0 0 1-3.46 0"/></svg>
+            Alert Center
         </a>
         <div class="sidebar__divider"></div>
         <button class="sidebar__item sidebar__journal-btn" onclick="openJournal()" title="Open Trading Journal">
-            📒 Trade Journal
+            <svg class="sidebar__svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"/><path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"/></svg>
+            Trade Journal
         </button>
-        <div class="sidebar__footer">Paralux Terminal — Paralux Analytics</div>
+        <div class="sidebar__footer">&copy; 2025 Paralux Analytics</div>
     </aside>
 
     <!-- ═══════════════ TRADING JOURNAL DRAWER ═══════════════ -->
