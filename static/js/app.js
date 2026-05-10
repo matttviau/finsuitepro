@@ -2965,8 +2965,9 @@ function selectStrategy(el, key){
     if(key === 'sma_crossover')       { buyEl.value='0.05';  sellEl.value='-0.05';  }
     else if(key === 'momentum')       { buyEl.value='0.20';  sellEl.value='-0.20';  }
     else if(key === 'macro_composite'){ buyEl.value='0.18';  sellEl.value='-0.18';  }
-    else if(key === 'sentimomentum')   { buyEl.value='0.18'; sellEl.value='-0.18'; }
-    else                              { buyEl.value='0.15';  sellEl.value='-0.15';  }
+    else if(key === 'sentimomentum')    { buyEl.value='0.18'; sellEl.value='-0.18'; }
+    else if(key === 'ecofundamental')  { buyEl.value='0.12'; sellEl.value='-0.12'; }
+    else                               { buyEl.value='0.15'; sellEl.value='-0.15';  }
 }
 
 function runBacktest(){
@@ -3128,6 +3129,26 @@ function renderBacktest(d){
                 <strong style="color:${C.purple}">Bollinger Band %B (25%)</strong> — <em>%B = (price − lower) ÷ (upper − lower)</em>; signal = −(2 × %B − 1).
                 +1.0 at/below the lower band (oversold entry timing); −1.0 at/above the upper band (overbought exit timing).
                 <strong>Squeeze mode</strong>: when band width falls below 70 % of its 50-bar median (coiling for a breakout), the BB signal pivots to lean with the current P&amp;F column direction rather than mean-reverting.`
+        },
+        ecofundamental: {
+            name: 'EcoFundamental Strategy',
+            icon: '⬡',
+            color: C.gold,
+            body: `A <strong style="color:var(--text-primary)">macro-fundamental signal</strong> that fuses three independent data sources — price structure, Federal Reserve macro series, and SEC EDGAR earnings data — into a single score.
+                <br><br>
+                <strong style="color:${C.gold}">Point &amp; Figure — ATR-Adaptive, 3-Box Reversal (35%)</strong> — The P&amp;F engine uses a <em>3-box reversal rule</em> to generate more frequent structural signals while remaining immune to daily noise.
+                Box size = <code style="background:var(--accent);padding:1px 5px;border-radius:4px">ATR ÷ price</code> (clamped 0.5 %–2.5 %), refreshed at every column flip.
+                Double/triple-top and double/triple-bottom breakout pattern boosts (<code style="background:var(--accent);padding:1px 5px;border-radius:4px">+0.25</code> / <code style="background:var(--accent);padding:1px 5px;border-radius:4px">+0.40</code>) apply.
+                <br><br>
+                <strong style="color:${C.gold}">Economic Macro (GDP · CPI · RDPI) (40%)</strong> — Three live FRED series provide a macro regime overlay aligned to each trading day:
+                <em>Real GDP (GDPC1)</em> 40% — YoY growth: +1 at ≥4 %, –1 at ≤–2 %;
+                <em>CPI Inflation (CPIAUCSL)</em> 35% — signal peaks near 2 % and falls as inflation rises above 3 %, penalising high-inflation regimes;
+                <em>Real Disposable Income (DSPIC96)</em> 25% — consumer income growth: +1 at ≥4 %, –1 at ≤–3 %.
+                <br><br>
+                <strong style="color:${C.gold}">Fundamental Growth Quality (25%)</strong> — Current SEC XBRL filings are used to score <em>revenue YoY growth</em> (+1 at ≥20 %) and <em>net income YoY growth</em> (+1 at ≥25 %) as a static quality gate applied across the backtest window.
+                When no XBRL data is available for a ticker, this pillar is gracefully dropped and weights redistribute to P&amp;F (45 %) and Economic (55 %).
+                <br><br>
+                <strong style="color:${C.gold}">Risk Management</strong> — All strategies in this backtester include an <em>ATR-based trailing stop</em> (2.5× ATR, clamped 5 %–18 %) that ratchets upward as price rises, plus a <em>hard 15 % drawdown stop</em> from entry price, to protect against steep losses.`
         }
     };
     const strat = strategyDescriptions[strategyKey] || strategyDescriptions.combined;
@@ -3242,6 +3263,139 @@ function renderBacktest(d){
                 <strong style="color:var(--text-sec)">Avg Box Size</strong> — ATR ÷ price at each reversal; higher % means the engine ran through a more volatile period.<br>
                 <strong style="color:var(--text-sec)">VO% Expanding</strong> — % of bars where short-term volume EMA exceeded long-term EMA; &gt;55 % = sustained accumulation environment.<br>
                 <strong style="color:var(--text-sec)">Squeeze Bars</strong> — bars where BB width was below 70 % of its 50-bar median; high count signals many pending breakout setups were present.
+            </div>
+        </div>`;
+    }
+
+    // ── EcoFundamental diagnostics card ──────────────────────────────────────
+    if(strategyKey === 'ecofundamental' && d.eco_meta){
+        const m = d.eco_meta;
+        const riskStops = (d.stats && d.stats.risk_stops_triggered) || 0;
+
+        // GDP colour
+        const gdpVal = m.gdp_yoy_pct;
+        const gdpColor = gdpVal == null ? C.gold : gdpVal >= 3 ? C.green : gdpVal >= 0 ? C.gold : C.red;
+        const gdpLabel = gdpVal == null ? 'N/A' : `${gdpVal > 0 ? '+' : ''}${gdpVal}%`;
+
+        // CPI colour
+        const cpiVal = m.cpi_yoy_pct;
+        const cpiColor = cpiVal == null ? C.gold : cpiVal <= 3 ? C.green : cpiVal <= 5 ? C.gold : C.red;
+        const cpiLabel = cpiVal == null ? 'N/A' : `${cpiVal}%`;
+
+        // RDPI colour
+        const rdpiVal = m.rdpi_yoy_pct;
+        const rdpiColor = rdpiVal == null ? C.gold : rdpiVal >= 2 ? C.green : rdpiVal >= 0 ? C.gold : C.red;
+        const rdpiLabel = rdpiVal == null ? 'N/A' : `${rdpiVal > 0 ? '+' : ''}${rdpiVal}%`;
+
+        // Fundamental
+        const fundAvail = m.fund_available;
+        const revG = m.rev_growth;
+        const niG  = m.ni_growth;
+        const revColor = revG == null ? C.gold : revG >= 10 ? C.green : revG >= 0 ? C.gold : C.red;
+        const niColor  = niG  == null ? C.gold : niG  >= 10 ? C.green : niG  >= 0 ? C.gold : C.red;
+        const fundSigColor = m.fund_signal >= 0.15 ? C.green : m.fund_signal <= -0.15 ? C.red : C.gold;
+
+        html += `<div class="card" style="border-color:rgba(255,176,32,0.22)">
+            <div style="display:flex;align-items:center;gap:10px;margin-bottom:4px">
+                <span style="font-size:16px;color:${C.gold}">⬡</span>
+                <div class="card__title" style="margin:0;color:${C.gold}">EcoFundamental — Strategy Diagnostics</div>
+            </div>
+            <div style="font-size:11px;color:var(--text-dim);margin-bottom:14px;line-height:1.6">
+                Live readings from FRED macro series and SEC EDGAR filings as of the most recent data available.
+                ${!fundAvail ? '<span style="color:var(--orange)">⚠ No fundamental XBRL data found — running P&F (45%) + Economic (55%) fallback mode.</span>' : ''}
+            </div>
+
+            <div style="font-size:10px;font-weight:700;color:var(--text-dim);text-transform:uppercase;letter-spacing:0.08em;margin-bottom:8px">
+                ◆ Point &amp; Figure — ATR-Adaptive, 3-Box Reversal
+            </div>
+            <div class="pnf-meta-strip" style="margin-bottom:18px">
+                <div class="pnf-meta-chip" style="border-color:rgba(255,176,32,0.2)">
+                    <div class="pnf-meta-chip__val" style="color:${C.cyan}">${m.pnf_reversals}</div>
+                    <div class="pnf-meta-chip__label">Column Reversals</div>
+                </div>
+                <div class="pnf-meta-chip" style="border-color:rgba(0,212,120,0.2)">
+                    <div class="pnf-meta-chip__val" style="color:${C.green}">${m.dbl_top_breaks + m.tri_top_breaks}</div>
+                    <div class="pnf-meta-chip__label">Bullish Breaks</div>
+                </div>
+                <div class="pnf-meta-chip" style="border-color:rgba(255,51,72,0.2)">
+                    <div class="pnf-meta-chip__val" style="color:${C.red}">${m.dbl_bot_breaks + m.tri_bot_breaks}</div>
+                    <div class="pnf-meta-chip__label">Bearish Breaks</div>
+                </div>
+                <div class="pnf-meta-chip" style="border-color:rgba(255,176,32,0.2)">
+                    <div class="pnf-meta-chip__val" style="color:${C.gold}">${m.avg_col_depth}</div>
+                    <div class="pnf-meta-chip__label">Avg Col Depth</div>
+                </div>
+                <div class="pnf-meta-chip" style="border-color:rgba(255,176,32,0.2)">
+                    <div class="pnf-meta-chip__val" style="color:${C.gold}">${m.avg_box_pct}%</div>
+                    <div class="pnf-meta-chip__label">Avg Box Size</div>
+                </div>
+            </div>
+
+            <div style="font-size:10px;font-weight:700;color:var(--text-dim);text-transform:uppercase;letter-spacing:0.08em;margin-bottom:8px">
+                ◆ Economic Macro Readings (FRED)
+            </div>
+            <div class="pnf-meta-strip" style="margin-bottom:18px">
+                <div class="pnf-meta-chip" style="border-color:rgba(255,176,32,0.2)">
+                    <div class="pnf-meta-chip__val" style="color:${gdpColor}">${gdpLabel}</div>
+                    <div class="pnf-meta-chip__label">GDP YoY (GDPC1)</div>
+                </div>
+                <div class="pnf-meta-chip" style="border-color:rgba(255,176,32,0.2)">
+                    <div class="pnf-meta-chip__val" style="color:${cpiColor}">${cpiLabel}</div>
+                    <div class="pnf-meta-chip__label">CPI YoY (CPIAUCSL)</div>
+                </div>
+                <div class="pnf-meta-chip" style="border-color:rgba(255,176,32,0.2)">
+                    <div class="pnf-meta-chip__val" style="color:${rdpiColor}">${rdpiLabel}</div>
+                    <div class="pnf-meta-chip__label">Real Income YoY</div>
+                </div>
+            </div>
+
+            <div style="font-size:10px;font-weight:700;color:var(--text-dim);text-transform:uppercase;letter-spacing:0.08em;margin-bottom:8px">
+                ◆ Fundamental Growth (SEC EDGAR XBRL)
+            </div>
+            <div class="pnf-meta-strip" style="margin-bottom:18px">
+                ${fundAvail ? `
+                <div class="pnf-meta-chip" style="border-color:rgba(255,176,32,0.2)">
+                    <div class="pnf-meta-chip__val" style="color:${revColor}">${revG != null ? (revG > 0 ? '+' : '') + revG + '%' : 'N/A'}</div>
+                    <div class="pnf-meta-chip__label">Revenue YoY</div>
+                </div>
+                <div class="pnf-meta-chip" style="border-color:rgba(255,176,32,0.2)">
+                    <div class="pnf-meta-chip__val" style="color:${niColor}">${niG != null ? (niG > 0 ? '+' : '') + niG + '%' : 'N/A'}</div>
+                    <div class="pnf-meta-chip__label">Earnings YoY</div>
+                </div>
+                <div class="pnf-meta-chip" style="border-color:rgba(255,176,32,0.2)">
+                    <div class="pnf-meta-chip__val" style="color:${fundSigColor}">${m.fund_signal >= 0 ? '+' : ''}${m.fund_signal}</div>
+                    <div class="pnf-meta-chip__label">Fund Score</div>
+                </div>` : `
+                <div class="pnf-meta-chip" style="border-color:rgba(255,140,0,0.2)">
+                    <div class="pnf-meta-chip__val" style="color:var(--orange);font-size:12px">Unavailable</div>
+                    <div class="pnf-meta-chip__label">XBRL Data</div>
+                </div>`}
+            </div>
+
+            <div style="font-size:10px;font-weight:700;color:var(--text-dim);text-transform:uppercase;letter-spacing:0.08em;margin-bottom:8px">
+                ◆ Risk Management
+            </div>
+            <div class="pnf-meta-strip" style="margin-bottom:14px">
+                <div class="pnf-meta-chip" style="border-color:rgba(255,51,72,0.2)">
+                    <div class="pnf-meta-chip__val" style="color:${riskStops > 0 ? C.red : C.green}">${riskStops}</div>
+                    <div class="pnf-meta-chip__label">Stops Triggered</div>
+                </div>
+                <div class="pnf-meta-chip" style="border-color:rgba(255,176,32,0.2)">
+                    <div class="pnf-meta-chip__val" style="color:${C.gold}">2.5× ATR</div>
+                    <div class="pnf-meta-chip__label">Trail Multiplier</div>
+                </div>
+                <div class="pnf-meta-chip" style="border-color:rgba(255,51,72,0.2)">
+                    <div class="pnf-meta-chip__val" style="color:${C.red}">15%</div>
+                    <div class="pnf-meta-chip__label">Hard Stop Loss</div>
+                </div>
+            </div>
+
+            <div style="font-size:11px;color:var(--text-dim);line-height:1.75;border-top:1px solid var(--border);padding-top:10px">
+                <strong style="color:var(--text-sec)">GDP YoY</strong> — year-over-year real GDP growth rate at end of test window; ≥3 % = expansion, &lt;0 % = recession.<br>
+                <strong style="color:var(--text-sec)">CPI YoY</strong> — inflation rate; signal is strongest near 2 % and weakens above 3 % to penalise inflationary regimes.<br>
+                <strong style="color:var(--text-sec)">Real Income YoY</strong> — DSPIC96 YoY change; rising real income supports consumer spending and is bullish for equities.<br>
+                <strong style="color:var(--text-sec)">Fundamental score</strong> — static bias computed from the most recent annual SEC filings; applied uniformly across the backtest window.<br>
+                <strong style="color:var(--text-sec)">Stops Triggered</strong> — trades closed by ATR trailing stop or 15 % hard stop rather than by signal reversal.
             </div>
         </div>`;
     }

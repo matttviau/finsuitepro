@@ -3402,6 +3402,32 @@ button.econ-view-btn {
     -webkit-text-fill-color: transparent;
 }
 
+/* ── EcoFundamental card ─────────────────────────────────────────────────── */
+.bt-strategy-card--ecofund {
+    border-color: rgba(255, 176, 32, 0.28);
+    background: linear-gradient(135deg, var(--card) 0%, rgba(255, 176, 32, 0.05) 100%);
+    position: relative;
+}
+.bt-strategy-card--ecofund:hover {
+    border-color: rgba(255, 176, 32, 0.55);
+}
+.bt-strategy-card--ecofund.active {
+    border-color: var(--gold);
+    border-top-color: var(--gold);
+    background: rgba(255, 176, 32, 0.07);
+    box-shadow: 0 0 0 2px rgba(255, 176, 32, 0.18), 0 4px 16px rgba(255, 176, 32, 0.12);
+}
+.bt-strategy-card--ecofund .bt-strategy-card__icon {
+    background: linear-gradient(135deg, var(--gold), var(--orange));
+    -webkit-background-clip: text; background-clip: text;
+    -webkit-text-fill-color: transparent;
+}
+.bt-strategy-card__badge--ecofund {
+    background: linear-gradient(90deg, var(--gold), var(--orange));
+    color: #000;
+    font-weight: 800;
+}
+
 /* ── P&F metadata insight strip ─────────────────────────────────────────── */
 .pnf-meta-strip {
     display: flex;
