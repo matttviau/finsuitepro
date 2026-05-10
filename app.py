@@ -2677,267 +2677,139 @@ def _compute_pnf_bb_vol_signal(df: pd.DataFrame, reversal: int = 5) -> tuple:
     return combined, senti_meta
 
 
-# ── EcoFundamental Strategy helpers ────────────────────────────────────────
+# ── AdaptiveEdge Strategy ───────────────────────────────────────────────────
 
-def _fetch_earnings_revenue_score(ticker: str) -> tuple:
+def _compute_adaptiveedge_signal(df: pd.DataFrame) -> tuple:
     """
-    Fetch SEC XBRL facts for *ticker* and compute YoY revenue + earnings growth
-    signals.  Returns (signal: float ∈ [-1,+1], meta: dict).
-    Falls back to (0.0, {'available': False}) when XBRL data is unavailable.
+    AdaptiveEdge — Three uncorrelated, regime-aware signal pillars.
+
+    ┌──────────────────────────────────────────┬────────┬──────────────────────────────────────┐
+    │ Pillar                                   │ Weight │ Role                                 │
+    ├──────────────────────────────────────────┼────────┼──────────────────────────────────────┤
+    │ Efficiency Ratio Trend (ERT)             │  35 %  │ Trend quality filter + SMA alignment │
+    │ Multi-Horizon Momentum (MHM)             │  40 %  │ 10/21/63-day cross-timeframe agreement│
+    │ Volatility Regime Oscillator (VRO)       │  25 %  │ Regime-adaptive breakout/reversion   │
+    └──────────────────────────────────────────┴────────┴──────────────────────────────────────┘
+
+    Efficiency Ratio (Kaufman)
+        ER = |net price move| / |total path length| over a 20-bar window.
+        ER → 1 means the market moved efficiently in one direction (strong trend).
+        ER → 0 means price thrashed back and forth with no net progress (choppy).
+        Signal = price_direction × ER^0.7 — the exponent de-emphasises middling
+        readings, rewarding only clean trending moves.  Blended 70/30 with
+        SMA 50/200 alignment for long-term trend confirmation.
+
+    Multi-Horizon Momentum (MHM)
+        Sharpe-normalised rate-of-change at three lookback horizons (10, 21, 63 days).
+        mom[h] = ROC[h] / (annualised_rolling_vol[h])
+        Agreement filter: full signal when all three horizons agree in direction;
+        60 % signal when any two agree; zero when all three disagree.  This kills
+        whipsaw trades during choppy, directionless periods.
+
+    Volatility Regime Oscillator (VRO)
+        Compares 10-day realised vol to 50-day realised vol.
+        Vol-ratio < 0.85  (compression) → breakout mode: Bollinger Band %B
+            momentum signal; price near upper band = building breakout.
+        Vol-ratio > 1.20  (expansion) → mean-reversion mode: RSI fade signal;
+            extreme RSI readings are faded back toward the mean.
+        Intermediate: linear blend between both sub-signals.
+
+    Returns (signal_series, ae_meta_dict).
     """
-    try:
-        facts = _FD.get_facts(ticker)
-    except Exception:
-        return 0.0, {'available': False}
-    if not facts:
-        return 0.0, {'available': False}
-
-    rev_tags = [
-        "RevenueFromContractWithCustomerExcludingAssessedTax",
-        "Revenues", "SalesRevenueNet",
-        "RevenueFromContractWithCustomerIncludingAssessedTax",
-    ]
-    ni_tags = ["NetIncomeLoss", "ProfitLoss", "NetIncome"]
-
-    rev_lbls, rev_vals, _ = _tag_timeseries(facts, rev_tags, 'annual', n=4)
-    ni_lbls,  ni_vals,  _ = _tag_timeseries(facts, ni_tags,  'annual', n=4)
-
-    rev_signal  = 0.0
-    rev_growth  = None
-    if rev_vals and len(rev_vals) >= 2:
-        prev_r, curr_r = float(rev_vals[-2]), float(rev_vals[-1])
-        if prev_r != 0:
-            rev_growth = (curr_r - prev_r) / abs(prev_r)
-            # +1 at ≥20 % growth, -1 at ≤-10 % decline
-            rev_signal = float(np.clip(
-                (rev_growth - (-0.10)) / (0.20 - (-0.10)) * 2 - 1, -1, 1))
-
-    ni_signal = 0.0
-    ni_growth = None
-    if ni_vals and len(ni_vals) >= 2:
-        prev_n, curr_n = float(ni_vals[-2]), float(ni_vals[-1])
-        if prev_n > 0:
-            ni_growth  = (curr_n - prev_n) / abs(prev_n)
-            # +1 at ≥25 % EPS growth, -1 at ≤-15 % decline
-            ni_signal  = float(np.clip(
-                (ni_growth - (-0.15)) / (0.25 - (-0.15)) * 2 - 1, -1, 1))
-        elif prev_n < 0 and curr_n > prev_n:
-            ni_signal = 0.25   # loss narrowing — mildly bullish
-        elif prev_n < 0 and curr_n < prev_n:
-            ni_signal = -0.50  # loss widening — bearish
-
-    if rev_vals and len(rev_vals) >= 2 and ni_vals and len(ni_vals) >= 2:
-        combined = float(np.clip(rev_signal * 0.50 + ni_signal * 0.50, -1, 1))
-    elif rev_vals and len(rev_vals) >= 2:
-        combined = rev_signal
-    elif ni_vals and len(ni_vals) >= 2:
-        combined = ni_signal
-    else:
-        return 0.0, {'available': False}
-
-    meta = {
-        'available':  True,
-        'rev_growth': round(rev_growth * 100, 1) if rev_growth is not None else None,
-        'ni_growth':  round(ni_growth  * 100, 1) if ni_growth  is not None else None,
-        'rev_signal': round(rev_signal, 3),
-        'ni_signal':  round(ni_signal,  3),
-        'rev_label':  rev_lbls[-1] if rev_lbls else None,
-        'ni_label':   ni_lbls[-1]  if ni_lbls  else None,
-    }
-    return combined, meta
-
-
-def _compute_gdp_cpi_rdpi_signal(df: pd.DataFrame) -> tuple:
-    """
-    Vectorised daily economic signal from three FRED macro series:
-
-    GDPC1   (40 %) – real GDP YoY growth:  +1 ≥ 4 %, -1 ≤ -2 %
-    CPIAUCSL(35 %) – CPI YoY inflation:    optimal ~2 %; ↑ inflation = bearish
-    DSPIC96 (25 %) – real disposable income YoY: +1 ≥ 4 %, -1 ≤ -3 %
-
-    Returns (signal_series aligned to df.index, snapshot_dict).
-    """
-    base   = pd.Series(0.0, index=df.index)
-    active = 0.0
-    snap   = {}
-
-    # ── Real GDP (GDPC1) ─────────────────────────────────────────────────────
-    gdp = _fetch_fred_series_for_macro("GDPC1")
-    if not gdp.empty:
-        gdp_aln = gdp.reindex(df.index, method='ffill').ffill()
-        gdp_yoy = gdp_aln.pct_change(252).fillna(0)
-        gdp_sig = ((gdp_yoy - (-0.02)) / (0.04 - (-0.02)) * 2 - 1).clip(-1, 1)
-        base   += gdp_sig * 0.40
-        active += 0.40
-        last_gdp = gdp_yoy.dropna()
-        snap['gdp_yoy_pct'] = round(float(last_gdp.iloc[-1]) * 100, 2) if not last_gdp.empty else None
-
-    # ── CPI Inflation (CPIAUCSL) ──────────────────────────────────────────────
-    cpi = _fetch_fred_series_for_macro("CPIAUCSL")
-    if not cpi.empty:
-        cpi_aln = cpi.reindex(df.index, method='ffill').ffill()
-        cpi_yoy = cpi_aln.pct_change(252).fillna(0) * 100   # in percent
-        # Bullish at ~2 %; bearish as inflation rises above 3 %
-        cpi_sig = ((3.0 - cpi_yoy) / 3.0).clip(-1, 1)
-        base   += cpi_sig * 0.35
-        active += 0.35
-        last_cpi = cpi_yoy.dropna()
-        snap['cpi_yoy_pct'] = round(float(last_cpi.iloc[-1]), 2) if not last_cpi.empty else None
-
-    # ── Real Disposable Personal Income (DSPIC96) ────────────────────────────
-    rdpi = _fetch_fred_series_for_macro("DSPIC96")
-    if not rdpi.empty:
-        rdpi_aln = rdpi.reindex(df.index, method='ffill').ffill()
-        rdpi_yoy = rdpi_aln.pct_change(252).fillna(0) * 100  # in percent
-        rdpi_sig = ((rdpi_yoy - (-3.0)) / (4.0 - (-3.0)) * 2 - 1).clip(-1, 1)
-        base   += rdpi_sig * 0.25
-        active += 0.25
-        last_rdpi = rdpi_yoy.dropna()
-        snap['rdpi_yoy_pct'] = round(float(last_rdpi.iloc[-1]), 2) if not last_rdpi.empty else None
-
-    if active > 0:
-        base = (base / active).clip(-1, 1)
-
-    return base, snap
-
-
-def _compute_ecofundamental_signal(df: pd.DataFrame, ticker: str) -> tuple:
-    """
-    EcoFundamental Strategy — three orthogonal signal pillars.
-
-    ┌──────────────────────────────────────┬────────┬────────────────────────────┐
-    │ Pillar                               │ Weight │ Role                       │
-    ├──────────────────────────────────────┼────────┼────────────────────────────┤
-    │ P&F  (ATR-adaptive, 3× reversal)     │  35 %  │ Price structure / timing   │
-    │ Economic (GDP · CPI · RDPI)          │  40 %  │ Macro regime filter        │
-    │ Fundamental (Revenue + Earnings YoY) │  25 %  │ Growth-quality gate        │
-    └──────────────────────────────────────┴────────┴────────────────────────────┘
-
-    Fallback when fundamental data is unavailable: P&F 45 % · Economic 55 %.
-    Returns (signal_series, eco_meta_dict).
-    """
-    prices = df["Close"].values.astype(float)
+    prices = df["Close"]
     n      = len(prices)
 
-    if n < 30:
+    if n < 65:
         return pd.Series(np.zeros(n), index=df.index), {}
 
-    # ── ATR array ────────────────────────────────────────────────────────────
-    atr_vals = (df["ATR"].ffill().fillna(0).values.astype(float)
-                if "ATR" in df.columns else np.zeros(n))
-    init_box = 0.01
-    for i in range(n):
-        if atr_vals[i] > 0 and prices[i] > 0:
-            init_box = float(np.clip(atr_vals[i] / prices[i], 0.005, 0.025))
-            break
-    cur_box_pct = init_box
+    ret = prices.pct_change().fillna(0)
 
-    # ── PILLAR 1: ATR-Adaptive P&F (3-box reversal) ──────────────────────────
-    col_dir      = 1
-    last_lvl     = prices[0]
-    col_boxes    = 1
-    col_archive: list = []
-    pnf_s        = np.zeros(n)
-    n_reversals  = 0
-    n_dbl_top = n_tri_top = n_dbl_bot = n_tri_bot = 0
-    box_pct_log: list = []
-    col_depth_sum = 0
+    # ── PILLAR 1: Efficiency Ratio Trend (35 %) ──────────────────────────────
+    er_w      = 20
+    direction = prices.diff(er_w).abs()
+    path      = prices.diff().abs().rolling(er_w, min_periods=er_w).sum()
+    er_vals   = (direction / path.replace(0, np.nan)).fillna(0).clip(0, 1)
+    price_dir = np.sign(prices.diff(er_w)).fillna(0)
+    er_signal = (price_dir * er_vals.pow(0.7)).clip(-1, 1)
 
-    for i in range(n):
-        p = prices[i]
-        if atr_vals[i] > 0 and p > 0:
-            cur_box_pct = float(np.clip(atr_vals[i] / p, 0.005, 0.025))
-        box_sz = p * cur_box_pct
-
-        if col_dir == 1:                        # X column
-            up_boxes = int((p - last_lvl) / box_sz) if box_sz > 0 else 0
-            if up_boxes > 0:
-                col_boxes += up_boxes
-                last_lvl  += up_boxes * box_sz
-            elif box_sz > 0 and (last_lvl - p) >= 3 * box_sz:  # reversal → O
-                prev_x = [c for c in col_archive[-4:] if c[0] == 1]
-                if len(prev_x) >= 1 and last_lvl > prev_x[-1][1]: n_dbl_top += 1
-                if len(prev_x) >= 2 and last_lvl > prev_x[-2][1]: n_tri_top += 1
-                col_archive.append((col_dir, last_lvl, col_boxes))
-                col_depth_sum += col_boxes
-                box_pct_log.append(cur_box_pct)
-                if atr_vals[i] > 0 and p > 0:
-                    cur_box_pct = float(np.clip(atr_vals[i] / p, 0.005, 0.025))
-                col_dir   = -1
-                last_lvl -= 3 * cur_box_pct * p
-                col_boxes = 3
-                n_reversals += 1
-        else:                                   # O column
-            dn_boxes = int((last_lvl - p) / box_sz) if box_sz > 0 else 0
-            if dn_boxes > 0:
-                col_boxes += dn_boxes
-                last_lvl  -= dn_boxes * box_sz
-            elif box_sz > 0 and (p - last_lvl) >= 3 * box_sz:  # reversal → X
-                prev_o = [c for c in col_archive[-4:] if c[0] == -1]
-                if len(prev_o) >= 1 and last_lvl < prev_o[-1][1]: n_dbl_bot += 1
-                if len(prev_o) >= 2 and last_lvl < prev_o[-2][1]: n_tri_bot += 1
-                col_archive.append((col_dir, last_lvl, col_boxes))
-                col_depth_sum += col_boxes
-                box_pct_log.append(cur_box_pct)
-                if atr_vals[i] > 0 and p > 0:
-                    cur_box_pct = float(np.clip(atr_vals[i] / p, 0.005, 0.025))
-                col_dir   = 1
-                last_lvl += 3 * cur_box_pct * p
-                col_boxes = 3
-                n_reversals += 1
-
-        depth_score = min(1.0, 0.25 + col_boxes * 0.07)
-        boost = 0.0
-        if col_dir == 1:
-            tops = [c[1] for c in col_archive[-6:] if c[0] == 1]
-            if len(tops) >= 1 and last_lvl >= tops[-1]:  boost = 0.25
-            if len(tops) >= 2 and last_lvl >= tops[-2]:  boost = 0.40
-        else:
-            bots = [c[1] for c in col_archive[-6:] if c[0] == -1]
-            if len(bots) >= 1 and last_lvl <= bots[-1]:  boost = 0.25
-            if len(bots) >= 2 and last_lvl <= bots[-2]:  boost = 0.40
-        pnf_s[i] = float(np.clip(col_dir * (depth_score + boost), -1, 1))
-
-    pnf_series = pd.Series(pnf_s, index=df.index)
-
-    # ── PILLAR 2: Economic (GDP · CPI · RDPI) ────────────────────────────────
-    eco_series, eco_snap = _compute_gdp_cpi_rdpi_signal(df)
-
-    # ── PILLAR 3: Fundamental (Revenue + Earnings YoY growth) ────────────────
-    fund_signal, fund_meta = _fetch_earnings_revenue_score(ticker)
-    fund_available = fund_meta.get('available', False)
-    fund_series    = pd.Series(float(fund_signal), index=df.index)
-
-    # ── Weighted blend ───────────────────────────────────────────────────────
-    if fund_available:
-        combined = (pnf_series * 0.35 + eco_series * 0.40 + fund_series * 0.25).clip(-1, 1)
+    # Long-term trend alignment via SMA 50 / 200
+    if "SMA_50" in df.columns and "SMA_200" in df.columns:
+        sma_gap = ((df["SMA_50"] - df["SMA_200"])
+                   / df["SMA_200"].replace(0, np.nan) / 0.05).clip(-1, 1).fillna(0)
     else:
-        combined = (pnf_series * 0.45 + eco_series * 0.55).clip(-1, 1)
+        sma_gap = pd.Series(0.0, index=df.index)
 
-    avg_depth   = round(col_depth_sum / max(n_reversals, 1), 1)
-    avg_box_pct = (round(float(np.mean(box_pct_log)) * 100, 2)
-                   if box_pct_log else round(init_box * 100, 2))
+    p1 = (er_signal * 0.70 + sma_gap * 0.30).clip(-1, 1)
 
-    eco_meta = {
-        # P&F diagnostics
-        'pnf_reversals':  n_reversals,
-        'dbl_top_breaks': n_dbl_top,
-        'tri_top_breaks': n_tri_top,
-        'dbl_bot_breaks': n_dbl_bot,
-        'tri_bot_breaks': n_tri_bot,
-        'avg_col_depth':  avg_depth,
-        'avg_box_pct':    avg_box_pct,
-        # Economic snapshot
-        'gdp_yoy_pct':  eco_snap.get('gdp_yoy_pct'),
-        'cpi_yoy_pct':  eco_snap.get('cpi_yoy_pct'),
-        'rdpi_yoy_pct': eco_snap.get('rdpi_yoy_pct'),
-        # Fundamental snapshot
-        'fund_available': fund_available,
-        'rev_growth':     fund_meta.get('rev_growth'),
-        'ni_growth':      fund_meta.get('ni_growth'),
-        'fund_signal':    round(float(fund_signal), 3),
+    # ── PILLAR 2: Multi-Horizon Momentum (40 %) ──────────────────────────────
+    horizons     = [10, 21, 63]
+    mom_signals  = []
+    for h in horizons:
+        roc   = prices.pct_change(h).fillna(0)
+        vol_h = ret.rolling(h, min_periods=max(5, h // 2)).std().replace(0, np.nan)
+        # Sharpe-normalised momentum clipped to ±1
+        s_mom = (roc / (vol_h * np.sqrt(252))).clip(-2, 2).fillna(0) * 0.5
+        mom_signals.append(s_mom)
+
+    signs    = pd.DataFrame({i: np.sign(m) for i, m in enumerate(mom_signals)})
+    avg_mom  = sum(mom_signals) / len(horizons)
+    all_agree  = (signs[0] == signs[1]) & (signs[1] == signs[2])
+    two_agree  = ((signs[0] == signs[1]) | (signs[1] == signs[2]) | (signs[0] == signs[2]))
+
+    p2 = pd.Series(0.0, index=df.index)
+    p2[all_agree]                   = avg_mom[all_agree]
+    p2[two_agree & ~all_agree]      = avg_mom[two_agree & ~all_agree] * 0.60
+    p2 = p2.clip(-1, 1)
+
+    # ── PILLAR 3: Volatility Regime Oscillator (25 %) ────────────────────────
+    vol_short = ret.rolling(10, min_periods=5).std().fillna(0)
+    vol_long  = ret.rolling(50, min_periods=20).std().replace(0, np.nan)
+    vol_ratio = (vol_short / vol_long).fillna(1.0)
+
+    # Breakout sub-signal (low vol → ride compression)
+    if "BB_upper" in df.columns and "BB_lower" in df.columns:
+        spread      = (df["BB_upper"] - df["BB_lower"]).replace(0, np.nan)
+        pct_b       = (prices - df["BB_lower"]) / spread
+        bb_breakout = ((pct_b - 0.5) * 2).clip(-1, 1).fillna(0)
+    else:
+        bb_breakout = pd.Series(0.0, index=df.index)
+
+    # Mean-reversion sub-signal (high vol → fade RSI extremes)
+    if "RSI" in df.columns:
+        rsi    = df["RSI"].fillna(50)
+        mr_sig = pd.Series(0.0, index=df.index)
+        mr_sig = mr_sig.where(rsi >= 30, ((30 - rsi) / 30.0).clip(0, 1))
+        mr_sig = mr_sig.where(rsi <= 70, (-(rsi - 70) / 30.0).clip(-1, 0))
+    else:
+        mr_sig = pd.Series(0.0, index=df.index)
+
+    # Blend: 0 = full breakout, 1 = full mean-reversion
+    blend = ((vol_ratio - 0.85) / (1.20 - 0.85)).clip(0, 1)
+    p3    = (bb_breakout * (1.0 - blend) + mr_sig * blend).clip(-1, 1)
+    # Hard overrides at regime extremes
+    p3 = p3.where(vol_ratio >= 0.85, bb_breakout)
+    p3 = p3.where(vol_ratio <= 1.20, mr_sig)
+
+    # ── Weighted blend ────────────────────────────────────────────────────────
+    combined = (p1 * 0.35 + p2 * 0.40 + p3 * 0.25).clip(-1, 1)
+
+    # ── Diagnostics meta ─────────────────────────────────────────────────────
+    vr       = vol_ratio.dropna()
+    low_pct  = round(float((vr < 0.85).mean()) * 100, 1)
+    high_pct = round(float((vr > 1.20).mean()) * 100, 1)
+
+    ae_meta = {
+        'avg_er':              round(float(er_vals.dropna().mean()), 3),
+        'er_trending_pct':     round(float((er_vals > 0.55).mean()) * 100, 1),
+        'mhm_active_pct':      round(float((p2.abs() > 0.05).mean()) * 100, 1),
+        'mhm_full_agree_pct':  round(float(all_agree.mean()) * 100, 1),
+        'low_vol_regime_pct':  low_pct,
+        'high_vol_regime_pct': high_pct,
+        'neutral_regime_pct':  round(100 - low_pct - high_pct, 1),
+        'avg_vol_ratio':       round(float(vr.mean()), 3),
+        'horizons':            horizons,
     }
-    return combined, eco_meta
+    return combined, ae_meta
 
 
 def run_backtest(ticker: str, start_date: str, end_date: str,
@@ -2950,7 +2822,7 @@ def run_backtest(ticker: str, start_date: str, end_date: str,
     df = compute_indicators(raw)
 
     senti_meta = {}
-    eco_meta   = {}
+    ae_meta    = {}
     if strategy == 'sma_crossover':
         signal_series = _compute_sma_crossover_signal(df)
     elif strategy == 'momentum':
@@ -2959,8 +2831,8 @@ def run_backtest(ticker: str, start_date: str, end_date: str,
         signal_series = _compute_macro_composite_signal(df)
     elif strategy == 'sentimomentum':
         signal_series, senti_meta = _compute_pnf_bb_vol_signal(df)
-    elif strategy == 'ecofundamental':
-        signal_series, eco_meta = _compute_ecofundamental_signal(df, ticker)
+    elif strategy == 'adaptiveedge':
+        signal_series, ae_meta = _compute_adaptiveedge_signal(df)
     else:  # 'combined'
         signal_series = _compute_signal_series(df)
 
@@ -3107,8 +2979,8 @@ def run_backtest(ticker: str, start_date: str, end_date: str,
     }
     if senti_meta:
         result['senti_meta'] = senti_meta
-    if eco_meta:
-        result['eco_meta'] = eco_meta
+    if ae_meta:
+        result['ae_meta'] = ae_meta
     return result
 
 
@@ -3936,7 +3808,7 @@ def api_backtest(ticker):
         lookback_days = request.args.get('lookback', 120, type=int)
         strategy = request.args.get('strategy', 'combined')
         if strategy not in ('combined', 'sma_crossover', 'momentum',
-                            'macro_composite', 'sentimomentum', 'ecofundamental'):
+                            'macro_composite', 'sentimomentum', 'adaptiveedge'):
             strategy = 'combined'
         result = run_backtest(ticker.upper(), start_date, end_date,
                               initial_capital, buy_thresh, sell_thresh, lookback_days, strategy)
