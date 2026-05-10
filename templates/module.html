@@ -675,7 +675,12 @@ updateEconSeries();
             <div class="bt-strategy-card__icon">🌐</div>
             <div class="bt-strategy-card__name">Macro Composite</div>
             <div class="bt-strategy-card__desc">Technical (70%) · Point &amp; Figure (10%) · Macro: yield curve + VIX + unemployment (20%)</div>
-            <div class="bt-strategy-card__badge">NEW</div>
+        </div>
+        <div class="bt-strategy-card bt-strategy-card--vol" data-strategy="vol_pnf_momentum" onclick="selectStrategy(this,'vol_pnf_momentum')">
+            <div class="bt-strategy-card__icon">◈</div>
+            <div class="bt-strategy-card__name">Vol · P&amp;F · Momentum</div>
+            <div class="bt-strategy-card__desc">P&amp;F column reversals (40%) · OBV volume confirmation (35%) · RSI + Rate-of-Change (25%)</div>
+            <div class="bt-strategy-card__badge bt-strategy-card__badge--green">NEW</div>
         </div>
     </div>
 
@@ -719,7 +724,7 @@ updateEconSeries();
             {% endfor %}
         </div>
     </div>
-    <div class="disclaimer" style="margin-bottom:12px">Backtests simulate historical performance. The Macro Composite strategy fetches live FRED data (first run may be slower). Past performance does not indicate future results.</div>
+    <div class="disclaimer" style="margin-bottom:12px">Backtests simulate historical performance. Macro Composite fetches live FRED data (first run may be slower). Past performance does not indicate future results.</div>
     <div id="bt-loading" class="loading" style="display:none"><div class="spinner"></div> Running backtest simulation...</div>
     <div id="bt-content" style="display:none"></div>
 </div>

@@ -3373,6 +3373,66 @@ button.econ-view-btn {
     color: #000;
     text-transform: uppercase;
 }
+.bt-strategy-card__badge--green {
+    background: var(--green);
+}
+
+/* ── Vol · P&F · Momentum card ──────────────────────────────────────────── */
+.bt-strategy-card--vol {
+    border-color: rgba(0, 212, 120, 0.28);
+    background: linear-gradient(135deg, var(--card) 0%, rgba(0, 212, 120, 0.04) 100%);
+    position: relative;
+}
+.bt-strategy-card--vol:hover {
+    border-color: rgba(0, 212, 120, 0.45);
+}
+.bt-strategy-card--vol.active {
+    border-color: var(--green);
+    border-top-color: var(--green);
+    background: rgba(0, 212, 120, 0.06);
+    box-shadow: 0 0 0 2px rgba(0, 212, 120, 0.16), 0 4px 16px rgba(0, 212, 120, 0.10);
+}
+.bt-strategy-card--vol .bt-strategy-card__icon {
+    background: linear-gradient(135deg, var(--green), var(--cyan));
+    -webkit-background-clip: text; background-clip: text;
+    -webkit-text-fill-color: transparent;
+}
+
+/* ── P&F metadata insight strip ─────────────────────────────────────────── */
+.pnf-meta-strip {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    margin-bottom: 16px;
+}
+.pnf-meta-chip {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    padding: 10px 16px;
+    background: var(--accent);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    min-width: 90px;
+    flex: 1;
+}
+.pnf-meta-chip__val {
+    font-size: 18px;
+    font-weight: 800;
+    font-family: var(--mono);
+    color: var(--text-primary);
+    line-height: 1.2;
+}
+.pnf-meta-chip__label {
+    font-size: 10px;
+    font-weight: 600;
+    color: var(--text-dim);
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    margin-top: 3px;
+    text-align: center;
+}
 
 
 /* ═══════════════════════════════════════════════════════════════════════════

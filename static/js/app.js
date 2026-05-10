@@ -2962,10 +2962,11 @@ function selectStrategy(el, key){
     // Adjust threshold defaults per strategy
     const buyEl  = document.getElementById('bt-buy-thresh');
     const sellEl = document.getElementById('bt-sell-thresh');
-    if(key === 'sma_crossover')    { buyEl.value='0.05'; sellEl.value='-0.05'; }
-    else if(key === 'momentum')    { buyEl.value='0.20'; sellEl.value='-0.20'; }
-    else if(key === 'macro_composite') { buyEl.value='0.18'; sellEl.value='-0.18'; }
-    else                           { buyEl.value='0.15'; sellEl.value='-0.15'; }
+    if(key === 'sma_crossover')       { buyEl.value='0.05';  sellEl.value='-0.05';  }
+    else if(key === 'momentum')       { buyEl.value='0.20';  sellEl.value='-0.20';  }
+    else if(key === 'macro_composite'){ buyEl.value='0.18';  sellEl.value='-0.18';  }
+    else if(key === 'vol_pnf_momentum'){ buyEl.value='0.20'; sellEl.value='-0.20'; }
+    else                              { buyEl.value='0.15';  sellEl.value='-0.15';  }
 }
 
 function runBacktest(){
@@ -3104,6 +3105,27 @@ function renderBacktest(d){
                 <em>VIX Fear Gauge</em> 35% — elevated volatility suppresses the signal;
                 <em>Unemployment Trend</em> 30% — rising UNRATE momentum is bearish.
                 The macro component is time-aligned to each trading day via forward-fill, making the strategy macro-aware throughout history.`
+        },
+        vol_pnf_momentum: {
+            name: 'Vol · P&F · Momentum Strategy',
+            icon: '◈',
+            color: C.green,
+            body: `A <strong style="color:var(--text-primary)">three-pillar signal</strong> built entirely from volume flow, classic Point &amp; Figure chart structure, and price momentum — no trend-following averages.
+                <br><br>
+                <strong style="color:${C.green}">Point &amp; Figure (40%)</strong> — A percentage-box P&amp;F engine tracks X-columns (rising price) and O-columns (falling price) using a 3-box reversal rule.
+                The base signal is <em>column direction × capped depth score</em>.
+                Pattern overlays boost the signal at confirmed structural breakouts:
+                <em>Double-top breakout</em> (X-col exceeds prior X-col high) adds <code style="background:var(--accent);padding:1px 5px;border-radius:4px">+0.25</code>;
+                <em>Triple-top breakout</em> adds <code style="background:var(--accent);padding:1px 5px;border-radius:4px">+0.40</code> — and their mirror images bearish.
+                When a column reversal occurs on <em>above-average volume</em>, a 5-bar decaying amplifier fires in the new column's direction, rewarding high-conviction reversals.
+                <br><br>
+                <strong style="color:${C.green}">OBV Volume Confirmation (35%)</strong> — On-Balance Volume 20-day trend is compared to price direction.
+                Agreement between OBV and price produces a full ±0.80 contribution.
+                OBV divergence (OBV rising while price falls, or vice versa) is captured as a muted ±0.35 leading signal.
+                The result is scaled by the relative volume of the bar (current bar ÷ 20-day avg), so liquid, high-conviction bars carry more weight.
+                <br><br>
+                <strong style="color:${C.green}">Price Momentum (25%)</strong> — A momentum overlay blends normalised <em>RSI</em> (60%) with <em>20-day Rate of Change</em> (40%).
+                This acts as a confirming filter: a P&amp;F breakout supported by elevated RSI and positive ROC produces the strongest composite score.`
         }
     };
     const strat = strategyDescriptions[strategyKey] || strategyDescriptions.combined;
@@ -3117,6 +3139,49 @@ function renderBacktest(d){
     const profitFactor = (lossT.reduce((a,t)=>a+Math.abs(t.pnl||0),0)>0)
         ? (winT.reduce((a,t)=>a+(t.pnl||0),0) / Math.abs(lossT.reduce((a,t)=>a+(t.pnl||0),0))).toFixed(2)
         : '∞';
+
+    // ── P&F metadata insight strip (vol_pnf_momentum only) ──
+    if(strategyKey === 'vol_pnf_momentum' && d.pnf_meta){
+        const m = d.pnf_meta;
+        html += `<div class="card" style="border-color:rgba(0,212,120,0.2)">
+            <div style="display:flex;align-items:center;gap:10px;margin-bottom:12px">
+                <span style="font-size:16px;color:${C.green}">◈</span>
+                <div class="card__title" style="margin:0;color:${C.green}">Point &amp; Figure Chart Analysis</div>
+            </div>
+            <div class="pnf-meta-strip">
+                <div class="pnf-meta-chip" style="border-color:rgba(0,212,120,0.2)">
+                    <div class="pnf-meta-chip__val" style="color:${C.cyan}">${m.pnf_reversals}</div>
+                    <div class="pnf-meta-chip__label">Column Reversals</div>
+                </div>
+                <div class="pnf-meta-chip" style="border-color:rgba(0,212,120,0.2)">
+                    <div class="pnf-meta-chip__val" style="color:${C.green}">${m.dbl_top_breaks}</div>
+                    <div class="pnf-meta-chip__label">Double-Top Breaks</div>
+                </div>
+                <div class="pnf-meta-chip" style="border-color:rgba(0,212,120,0.2)">
+                    <div class="pnf-meta-chip__val" style="color:${C.green}">${m.tri_top_breaks}</div>
+                    <div class="pnf-meta-chip__label">Triple-Top Breaks</div>
+                </div>
+                <div class="pnf-meta-chip" style="border-color:rgba(255,51,72,0.2)">
+                    <div class="pnf-meta-chip__val" style="color:${C.red}">${m.dbl_bot_breaks}</div>
+                    <div class="pnf-meta-chip__label">Double-Bot Breaks</div>
+                </div>
+                <div class="pnf-meta-chip" style="border-color:rgba(255,51,72,0.2)">
+                    <div class="pnf-meta-chip__val" style="color:${C.red}">${m.tri_bot_breaks}</div>
+                    <div class="pnf-meta-chip__label">Triple-Bot Breaks</div>
+                </div>
+                <div class="pnf-meta-chip">
+                    <div class="pnf-meta-chip__val" style="color:${C.gold}">${m.avg_col_depth}</div>
+                    <div class="pnf-meta-chip__label">Avg Column Depth</div>
+                </div>
+            </div>
+            <div style="font-size:11px;color:var(--text-dim);line-height:1.7">
+                <strong style="color:var(--text-sec)">Column Reversals</strong> — total direction changes detected by the 3-box P&amp;F engine over the test period.<br>
+                <strong style="color:${C.green}">Double / Triple-Top Breakouts</strong> — price in an X-column exceeded prior X-column highs, confirming upside structural breaks.<br>
+                <strong style="color:${C.red}">Double / Triple-Bottom Breakdowns</strong> — price in an O-column broke below prior O-column lows, confirming downside structural breaks.<br>
+                <strong style="color:${C.gold}">Avg Column Depth</strong> — mean number of boxes per completed column; deeper columns indicate stronger directional conviction.
+            </div>
+        </div>`;
+    }
 
     html += `<div class="card">
         <div style="display:flex;align-items:center;gap:10px;margin-bottom:14px">
