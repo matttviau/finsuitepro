@@ -3107,29 +3107,27 @@ function renderBacktest(d){
                 The macro component is time-aligned to each trading day via forward-fill, making the strategy macro-aware throughout history.`
         },
         sentimomentum: {
-            name: 'Sentimomentum Strategy',
+            name: 'P&F · Band · Volume Strategy',
             icon: '◈',
             color: C.purple,
-            body: `A <strong style="color:var(--text-primary)">four-pillar signal</strong> that fuses Point &amp; Figure chart structure, volume flow, Bollinger Band mean-reversion timing, and consumer macro sentiment into a single composite score.
+            body: `A <strong style="color:var(--text-primary)">three-pillar signal</strong> built entirely from price structure, volume momentum, and Bollinger Band positioning — no macro overlays, no moving-average crossovers.
                 <br><br>
-                <strong style="color:${C.purple}">Point &amp; Figure — ATR-Adaptive, 5-Box Reversal (35%)</strong> — An ATR-adaptive P&amp;F engine tracks X-columns (rising price) and O-columns (falling price) with a <em>5-box reversal rule</em>, calibrated to reduce noise versus the traditional 3-box.
-                Box size refreshes at each column reversal using <code style="background:var(--accent);padding:1px 5px;border-radius:4px">ATR ÷ price</code> (clamped 0.5 %–2.5 %), so the engine self-tunes to each stock's current volatility regime.
-                The base signal is <em>column direction × depth score</em>.
-                <em>Double-top breakout</em> (X-col exceeds prior X-col high) adds <code style="background:var(--accent);padding:1px 5px;border-radius:4px">+0.25</code>;
-                <em>Triple-top breakout</em> adds <code style="background:var(--accent);padding:1px 5px;border-radius:4px">+0.40</code> — and their mirror images on the bearish side.
-                When a reversal occurs on <em>above-average volume</em>, a 5-bar decaying burst amplifies the new column's signal.
+                <strong style="color:${C.purple}">Point &amp; Figure — ATR-Adaptive, 5-Box Reversal (40%)</strong> — Tracks X-columns (rising price boxes) and O-columns (falling price boxes) with a <em>5-box reversal rule</em>.
+                Box size = <code style="background:var(--accent);padding:1px 5px;border-radius:4px">ATR ÷ price</code>, refreshed at each column flip (clamped 0.5 %–2.5 %) so the engine self-calibrates to the ticker's current volatility.
+                Base signal = column direction × depth score, growing as the column fills more boxes.
+                <em>Double-top breakout</em> adds <code style="background:var(--accent);padding:1px 5px;border-radius:4px">+0.25</code>; <em>triple-top</em> adds <code style="background:var(--accent);padding:1px 5px;border-radius:4px">+0.40</code> — and their mirror-image bearish counterparts.
+                When a column reversal occurs on above-average volume, a 5-bar decaying burst amplifies the new column direction.
                 <br><br>
-                <strong style="color:${C.purple}">OBV Volume Confirmation (30%)</strong> — On-Balance Volume 20-day trend is compared to price direction.
-                Agreement produces a full ±0.80 contribution; OBV divergence (leading signal) gives a muted ±0.35.
-                The result is scaled by relative volume so high-conviction bars carry more weight.
+                <strong style="color:${C.purple}">Volume Oscillator — EMA 5 vs EMA 20 (35%)</strong> — Measures the <em>momentum of volume itself</em>, not just its level.
+                <em>VO % = (EMA5_vol − EMA20_vol) / EMA20_vol</em>: positive means short-term volume is running ahead of its trend (accumulation pressure); negative means volume is drying up (fading conviction).
+                Made directional by the sign of the 10-day price return.
+                The VO % maps to an amplitude multiplier of <strong>[0.5×, 2.0×]</strong> applied to the price direction:
+                a +20 % VO doubles the signal; a −10 % VO halves it.
+                This means <em>high volume on strong price moves produces the strongest composite reading</em>.
                 <br><br>
-                <strong style="color:${C.purple}">Bollinger Band %B (20%)</strong> — Measures where price sits within its statistical envelope.
-                <em>%B = (price − lower band) ÷ (upper − lower)</em>; signal = −(2 × %B − 1) converts to +1.0 at the lower band (oversold entry timing) and −1.0 at the upper band (overbought exit timing).
-                During Bollinger Squeeze (bands narrower than 70 % of their 50-day median), the signal aligns with the current P&amp;F column direction to anticipate the pending breakout.
-                <br><br>
-                <strong style="color:${C.purple}">Michigan Consumer Sentiment / UMCSENT (15%)</strong> — FRED's monthly University of Michigan Consumer Sentiment index, forward-filled to every trading day.
-                The regime signal blends <em>absolute level</em> (40 %) — normalised around the 85-point historical mean — with <em>3-month momentum</em> (60 %) — the pace of change over the past quarter.
-                Momentum is weighted higher because the <em>direction</em> of sentiment shifts leads equity markets more reliably than the absolute reading.`
+                <strong style="color:${C.purple}">Bollinger Band %B (25%)</strong> — <em>%B = (price − lower) ÷ (upper − lower)</em>; signal = −(2 × %B − 1).
+                +1.0 at/below the lower band (oversold entry timing); −1.0 at/above the upper band (overbought exit timing).
+                <strong>Squeeze mode</strong>: when band width falls below 70 % of its 50-bar median (coiling for a breakout), the BB signal pivots to lean with the current P&amp;F column direction rather than mean-reverting.`
         }
     };
     const strat = strategyDescriptions[strategyKey] || strategyDescriptions.combined;
@@ -3144,28 +3142,27 @@ function renderBacktest(d){
         ? (winT.reduce((a,t)=>a+(t.pnl||0),0) / Math.abs(lossT.reduce((a,t)=>a+(t.pnl||0),0))).toFixed(2)
         : '∞';
 
-    // ── Sentimomentum metadata card ──────────────────────────────────────────
+    // ── P&F · Band · Volume diagnostics card ─────────────────────────────────
     if(strategyKey === 'sentimomentum' && d.senti_meta){
         const m = d.senti_meta;
-        const umcColor = m.umcsent_end != null
-            ? (m.umcsent_end >= 85 ? C.green : m.umcsent_end >= 70 ? C.gold : C.red)
-            : 'var(--text-dim)';
-        const umcLabel = m.umcsent_end != null ? m.umcsent_end : 'N/A';
-        const bbNetBias = m.bb_oversold > m.bb_overbought ? 'Oversold-biased' : m.bb_overbought > m.bb_oversold ? 'Overbought-biased' : 'Balanced';
+        const voColor = m.avg_vo_pct >= 0 ? C.green : C.red;
+        const voRegime = m.vo_pos_pct >= 55 ? 'Expanding' : m.vo_pos_pct <= 45 ? 'Contracting' : 'Mixed';
+        const voRegimeColor = m.vo_pos_pct >= 55 ? C.green : m.vo_pos_pct <= 45 ? C.red : C.gold;
+        const bbBias = m.bb_oversold > m.bb_overbought ? 'Oversold-biased' : m.bb_overbought > m.bb_oversold ? 'Overbought-biased' : 'Balanced';
         const bbBiasColor = m.bb_oversold > m.bb_overbought ? C.green : m.bb_overbought > m.bb_oversold ? C.red : C.gold;
         html += `<div class="card" style="border-color:rgba(139,92,246,0.22)">
             <div style="display:flex;align-items:center;gap:10px;margin-bottom:4px">
                 <span style="font-size:16px;color:${C.purple}">◈</span>
-                <div class="card__title" style="margin:0;color:${C.purple}">Sentimomentum — Strategy Diagnostics</div>
+                <div class="card__title" style="margin:0;color:${C.purple}">P&amp;F · Band · Volume — Strategy Diagnostics</div>
             </div>
             <div style="font-size:11px;color:var(--text-dim);margin-bottom:14px;line-height:1.6">
-                Computed from four independent pillars over the test window. Metrics below describe each pillar's activity.
+                Each section below describes one pillar's activity over the test window.
             </div>
 
             <div style="font-size:10px;font-weight:700;color:var(--text-dim);text-transform:uppercase;letter-spacing:0.08em;margin-bottom:8px">
-                ◆ Point &amp; Figure — ATR-Adaptive Engine (5-Box Reversal)
+                ◆ Point &amp; Figure — ATR-Adaptive, 5-Box Reversal
             </div>
-            <div class="pnf-meta-strip" style="margin-bottom:16px">
+            <div class="pnf-meta-strip" style="margin-bottom:18px">
                 <div class="pnf-meta-chip" style="border-color:rgba(139,92,246,0.2)">
                     <div class="pnf-meta-chip__val" style="color:${C.cyan}">${m.pnf_reversals}</div>
                     <div class="pnf-meta-chip__label">Column Reversals</div>
@@ -3197,9 +3194,31 @@ function renderBacktest(d){
             </div>
 
             <div style="font-size:10px;font-weight:700;color:var(--text-dim);text-transform:uppercase;letter-spacing:0.08em;margin-bottom:8px">
-                ◆ Bollinger Band %B — Mean-Reversion Timing
+                ◆ Volume Oscillator — EMA 5 vs EMA 20
             </div>
-            <div class="pnf-meta-strip" style="margin-bottom:16px">
+            <div class="pnf-meta-strip" style="margin-bottom:18px">
+                <div class="pnf-meta-chip" style="border-color:rgba(139,92,246,0.2)">
+                    <div class="pnf-meta-chip__val" style="color:${voColor}">${m.avg_vo_pct > 0 ? '+' : ''}${m.avg_vo_pct}%</div>
+                    <div class="pnf-meta-chip__label">Avg VO%</div>
+                </div>
+                <div class="pnf-meta-chip" style="border-color:rgba(0,212,120,0.2)">
+                    <div class="pnf-meta-chip__val" style="color:${C.cyan}">${m.peak_vo_pct}%</div>
+                    <div class="pnf-meta-chip__label">Peak VO%</div>
+                </div>
+                <div class="pnf-meta-chip" style="border-color:rgba(139,92,246,0.2)">
+                    <div class="pnf-meta-chip__val" style="color:${C.gold}">${m.vo_pos_pct}%</div>
+                    <div class="pnf-meta-chip__label">Volume Expanding</div>
+                </div>
+                <div class="pnf-meta-chip" style="border-color:rgba(139,92,246,0.15)">
+                    <div class="pnf-meta-chip__val" style="color:${voRegimeColor};font-size:13px">${voRegime}</div>
+                    <div class="pnf-meta-chip__label">VO Regime</div>
+                </div>
+            </div>
+
+            <div style="font-size:10px;font-weight:700;color:var(--text-dim);text-transform:uppercase;letter-spacing:0.08em;margin-bottom:8px">
+                ◆ Bollinger Band %B — Mean-Reversion &amp; Squeeze
+            </div>
+            <div class="pnf-meta-strip" style="margin-bottom:14px">
                 <div class="pnf-meta-chip" style="border-color:rgba(0,212,120,0.2)">
                     <div class="pnf-meta-chip__val" style="color:${C.green}">${m.bb_oversold}</div>
                     <div class="pnf-meta-chip__label">Oversold Bars</div>
@@ -3208,34 +3227,21 @@ function renderBacktest(d){
                     <div class="pnf-meta-chip__val" style="color:${C.red}">${m.bb_overbought}</div>
                     <div class="pnf-meta-chip__label">Overbought Bars</div>
                 </div>
-                <div class="pnf-meta-chip" style="border-color:rgba(255,176,32,0.15)">
-                    <div class="pnf-meta-chip__val" style="color:${bbBiasColor};font-size:13px">${bbNetBias}</div>
-                    <div class="pnf-meta-chip__label">BB Regime Bias</div>
+                <div class="pnf-meta-chip" style="border-color:rgba(255,176,32,0.2)">
+                    <div class="pnf-meta-chip__val" style="color:${C.gold}">${m.bb_squeeze_n}</div>
+                    <div class="pnf-meta-chip__label">Squeeze Bars</div>
                 </div>
-            </div>
-
-            <div style="font-size:10px;font-weight:700;color:var(--text-dim);text-transform:uppercase;letter-spacing:0.08em;margin-bottom:8px">
-                ◆ Michigan Consumer Sentiment (UMCSENT) — Period-End Reading
-            </div>
-            <div class="pnf-meta-strip" style="margin-bottom:12px">
-                <div class="pnf-meta-chip" style="border-color:rgba(139,92,246,0.2);flex:none;min-width:120px">
-                    <div class="pnf-meta-chip__val" style="color:${umcColor};font-size:22px">${umcLabel}</div>
-                    <div class="pnf-meta-chip__label">UMCSENT at Period End</div>
-                </div>
-                <div style="flex:1;padding:10px 14px;background:var(--accent);border:1px solid var(--border);border-radius:10px;font-size:12px;color:var(--text-sec);line-height:1.7">
-                    <strong style="color:var(--text-primary)">Reading guide:</strong>
-                    <span style="color:${C.green}">≥ 85</span> — above historical mean, consumer confidence elevated, broadly constructive for equities. &nbsp;
-                    <span style="color:${C.gold}">70–85</span> — neutral zone, markets can trade either way. &nbsp;
-                    <span style="color:${C.red}">&lt; 70</span> — below historical mean, recessionary caution; strategy increases bearish weighting.
-                    The 3-month momentum of UMCSENT (weighted 60 %) is a more forward-looking signal than the absolute level.
+                <div class="pnf-meta-chip" style="border-color:rgba(139,92,246,0.15)">
+                    <div class="pnf-meta-chip__val" style="color:${bbBiasColor};font-size:13px">${bbBias}</div>
+                    <div class="pnf-meta-chip__label">BB Regime</div>
                 </div>
             </div>
 
             <div style="font-size:11px;color:var(--text-dim);line-height:1.75;border-top:1px solid var(--border);padding-top:10px">
-                <strong style="color:var(--text-sec)">5-box P&amp;F reversal</strong> — requires 5 × ATR-box move to change column direction; filters out micro-reversals.<br>
-                <strong style="color:var(--text-sec)">Double / Triple Breakouts</strong> — confirmed when the current X-column exceeds prior X-column highs (bullish) or O-column breaks prior O-column lows (bearish).<br>
-                <strong style="color:var(--text-sec)">Avg Box Size</strong> — mean ATR ÷ price used for box calibration; higher % = engine ran during a high-volatility period.<br>
-                <strong style="color:var(--text-sec)">Bollinger Squeeze</strong> — when bands narrow below 70 % of their 50-bar median, the BB signal aligns with P&amp;F column direction to anticipate the breakout.
+                <strong style="color:var(--text-sec)">Column Depth</strong> — deeper columns = stronger trending conviction; shallow columns near reversal threshold = choppy market.<br>
+                <strong style="color:var(--text-sec)">Avg Box Size</strong> — ATR ÷ price at each reversal; higher % means the engine ran through a more volatile period.<br>
+                <strong style="color:var(--text-sec)">VO% Expanding</strong> — % of bars where short-term volume EMA exceeded long-term EMA; &gt;55 % = sustained accumulation environment.<br>
+                <strong style="color:var(--text-sec)">Squeeze Bars</strong> — bars where BB width was below 70 % of its 50-bar median; high count signals many pending breakout setups were present.
             </div>
         </div>`;
     }
@@ -4470,7 +4476,7 @@ const HELP_CONTENT = {
         items: [
             { icon: '◆', head: 'Live Signal', body: 'Enter a ticker to compute a real-time composite signal score from −1 (strong bear) to +1 (strong bull). The gauge and breakdown show each indicator\'s contribution.' },
             { icon: '🔄', head: 'Backtest', body: 'Switch to the <strong>Backtesting</strong> tab. Enter ticker, strategy, thresholds, and lookback period, then click <strong>Run Backtest</strong>.' },
-            { icon: '📐', head: 'Strategies', body: '<strong>Combined</strong>: 8-indicator composite. <strong>SMA Crossover</strong>: Golden/Death Cross. <strong>Momentum</strong>: RSI + ROC + Stochastic. <strong>Macro Composite</strong>: Technical + P&F + FRED macro. <strong>Sentimomentum</strong>: ATR-adaptive 5-box P&F + OBV volume + Bollinger %B + Michigan Consumer Sentiment.' },
+            { icon: '📐', head: 'Strategies', body: '<strong>Combined</strong>: 8-indicator composite. <strong>SMA Crossover</strong>: Golden/Death Cross. <strong>Momentum</strong>: RSI + ROC + Stochastic. <strong>Macro Composite</strong>: Technical + P&F + FRED macro. <strong>P&F · Band · Volume</strong>: ATR-adaptive 5-box P&F (40%) + Volume Oscillator EMA5/20 (35%) + Bollinger %B with squeeze detection (25%).' },
             { icon: '📊', head: 'Results', body: 'The <strong>Equity Curve</strong> compares strategy returns vs Buy & Hold. The <strong>Signal chart</strong> shows entry (▲) and exit (▼) points. The trade log lists every transaction.' },
             { icon: '⚙', head: 'Thresholds', body: 'Buy threshold: score ≥ this value triggers a buy. Sell threshold: score ≤ this value triggers a sell. Wider thresholds = fewer, more confident trades.' },
         ]
