@@ -2966,7 +2966,7 @@ function selectStrategy(el, key){
     else if(key === 'momentum')       { buyEl.value='0.20';  sellEl.value='-0.20';  }
     else if(key === 'macro_composite'){ buyEl.value='0.18';  sellEl.value='-0.18';  }
     else if(key === 'sentimomentum')    { buyEl.value='0.18'; sellEl.value='-0.18'; }
-    else if(key === 'adaptiveedge')    { buyEl.value='0.14'; sellEl.value='-0.14'; }
+    else if(key === 'counterflow')     { buyEl.value='0.16'; sellEl.value='-0.16'; }
     else                               { buyEl.value='0.15'; sellEl.value='-0.15';  }
 }
 
@@ -3130,28 +3130,26 @@ function renderBacktest(d){
                 +1.0 at/below the lower band (oversold entry timing); −1.0 at/above the upper band (overbought exit timing).
                 <strong>Squeeze mode</strong>: when band width falls below 70 % of its 50-bar median (coiling for a breakout), the BB signal pivots to lean with the current P&amp;F column direction rather than mean-reverting.`
         },
-        adaptiveedge: {
-            name: 'AdaptiveEdge Strategy',
-            icon: '◐',
-            color: C.cyan,
-            body: `A <strong style="color:var(--text-primary)">regime-aware, fully adaptive signal</strong> built from three uncorrelated pillars — each targeting a different source of market alpha — with no external data dependencies.
+        counterflow: {
+            name: 'CounterFlow Strategy',
+            icon: '⊗',
+            color: C.blue,
+            body: `A <strong style="color:var(--text-primary)">pure contrarian strategy</strong> — systematically buys exhaustion and sells euphoria by detecting the precise moment a crowd-driven move runs out of fuel.
                 <br><br>
-                <strong style="color:${C.cyan}">Efficiency Ratio Trend — ERT (35%)</strong> — The <em>Kaufman Efficiency Ratio</em> measures how <em>efficiently</em> price moved over the last 20 bars:
-                <code style="background:var(--accent);padding:1px 5px;border-radius:4px">ER = |net move| ÷ |total path|</code>.
-                ER → 1 means clean, directional trend; ER → 0 means choppy, noisy market.
-                Signal = <em>price direction × ER<sup>0.7</sup></em> — the exponent rewards clean trends while sharply discounting halfway readings.
-                Blended 70/30 with SMA 50/200 alignment for a long-term structural filter.
+                <strong style="color:${C.blue}">Capitulation / Euphoria Detector — CED (40%)</strong> — The core engine identifies <em>selling exhaustion</em> and <em>buying exhaustion</em> from raw price/volume behaviour:
+                <em>Volume score</em>: <code style="background:var(--accent);padding:1px 5px;border-radius:4px">(vol / 20d_avg − 1) ÷ 2</code> — a volume spike on a down day signals panic;
+                <em>Bar position</em>: <code style="background:var(--accent);padding:1px 5px;border-radius:4px">(Close − Low) ÷ (High − Low)</code> — closing near the low of the bar = sellers exhausted;
+                A <strong>streak amplifier</strong> adds 7 % per consecutive same-direction day (capped at 7 days = +49 %) — the longer the losing streak, the more violent the snap-back tends to be.
+                A <em>macro trend guard</em> (SMA 50/200) lightly amplifies dip-buy signals in bull markets and rally-fade signals in bear markets, so the strategy goes with the dominant trend at macro scale.
                 <br><br>
-                <strong style="color:${C.cyan}">Multi-Horizon Momentum — MHM (40%)</strong> — Sharpe-normalised rate-of-change at three lookback horizons (10, 21, 63 days):
-                <code style="background:var(--accent);padding:1px 5px;border-radius:4px">momentum[h] = ROC[h] ÷ annualised_vol[h]</code>.
-                An <strong>agreement filter</strong> then gates the output: full signal when all three timeframes agree in direction; 60 % signal when any two agree; <em>zero</em> when they all disagree.
-                This eliminates the most damaging whipsaw trades — entries that fire during brief counter-trend pops within a larger ranging market.
+                <strong style="color:${C.blue}">Momentum Exhaustion &amp; MACD Divergence — MED (35%)</strong> — Three sub-signals targeting over-extended moves:
+                <em>Short-term excess</em>: <code style="background:var(--accent);padding:1px 5px;border-radius:4px">(ROC_5 − ROC_20) ÷ (2 × ATR%)</code> — fades the portion of the 5-day move that overshoots the 20-day trend direction;
+                <em>RSI fade</em>: RSI ≤35 → buy, RSI ≥65 → sell, scaled by distance from the neutral 50 line;
+                <em>MACD divergence</em>: price declining while the MACD histogram is rising signals hidden buying pressure — a classic pre-reversal fingerprint.
                 <br><br>
-                <strong style="color:${C.cyan}">Volatility Regime Oscillator — VRO (25%)</strong> — Compares 10-day realised volatility to 50-day realised volatility to classify the current market regime:
-                <em>Low vol (ratio &lt; 0.85)</em> → breakout mode — BB %B momentum signal rides the inevitable compression release;
-                <em>High vol (ratio &gt; 1.20)</em> → mean-reversion mode — RSI extremes are faded back toward equilibrium;
-                <em>Neutral</em> → linearly blended between both.
-                This pillar literally changes its personality with market conditions.`
+                <strong style="color:${C.blue}">Rubber-Band Stretch — RBS (25%)</strong> — Measures how far price has been stretched from its natural resting place (multiple moving averages) in ATR units.
+                <code style="background:var(--accent);padding:1px 5px;border-radius:4px">stretch = −(dist_20 × 0.45 + dist_50 × 0.35 + dist_200 × 0.20) ÷ ATR</code>
+                A 3.5-ATR stretch below all three MAs maps to a maximum +1.0 signal.  Blended 60/40 with Bollinger Band %B inversion for precise entry timing.  The further the rubber band stretches, the harder it snaps back.`
         }
     };
     const strat = strategyDescriptions[strategyKey] || strategyDescriptions.combined;
@@ -3270,83 +3268,84 @@ function renderBacktest(d){
         </div>`;
     }
 
-    // ── AdaptiveEdge diagnostics card ────────────────────────────────────────
-    if(strategyKey === 'adaptiveedge' && d.ae_meta){
-        const m = d.ae_meta;
+    // ── CounterFlow diagnostics card ─────────────────────────────────────────
+    if(strategyKey === 'counterflow' && d.cf_meta){
+        const m = d.cf_meta;
         const riskStops = (d.stats && d.stats.risk_stops_triggered) || 0;
 
-        const erColor = m.avg_er >= 0.6 ? C.green : m.avg_er >= 0.4 ? C.gold : C.red;
-        const erLabel = m.avg_er >= 0.6 ? 'Strong Trend' : m.avg_er >= 0.4 ? 'Moderate' : 'Choppy';
-        const mhmColor = m.mhm_active_pct >= 55 ? C.green : m.mhm_active_pct >= 35 ? C.gold : C.red;
-        const fullAgreeColor = m.mhm_full_agree_pct >= 40 ? C.green : m.mhm_full_agree_pct >= 20 ? C.gold : C.red;
+        const capColor  = m.cap_events  >= 10 ? C.green : m.cap_events  >= 4  ? C.gold : C.red;
+        const euColor   = m.eu_events   >= 10 ? C.red   : m.eu_events   >= 4  ? C.gold : C.green;
+        const divBullC  = m.bull_div_n  >= 5  ? C.green : C.gold;
+        const divBearC  = m.bear_div_n  >= 5  ? C.red   : C.gold;
+        const stretchC  = m.avg_stretch_atr >= 2 ? C.green : m.avg_stretch_atr >= 1 ? C.gold : C.red;
 
-        const lowVolColor  = m.low_vol_regime_pct  >= 30 ? C.cyan  : C.gold;
-        const highVolColor = m.high_vol_regime_pct >= 30 ? C.red   : C.gold;
+        const bullTrendC = m.bull_trend_pct >= 50 ? C.green : C.gold;
+        const bearTrendC = m.bear_trend_pct >= 30 ? C.red   : C.gold;
 
-        html += `<div class="card" style="border-color:rgba(0,212,255,0.22)">
+        html += `<div class="card" style="border-color:rgba(74,158,255,0.22)">
             <div style="display:flex;align-items:center;gap:10px;margin-bottom:4px">
-                <span style="font-size:16px;color:${C.cyan}">◐</span>
-                <div class="card__title" style="margin:0;color:${C.cyan}">AdaptiveEdge — Strategy Diagnostics</div>
+                <span style="font-size:16px;color:${C.blue}">⊗</span>
+                <div class="card__title" style="margin:0;color:${C.blue}">CounterFlow — Strategy Diagnostics</div>
             </div>
             <div style="font-size:11px;color:var(--text-dim);margin-bottom:14px;line-height:1.6">
-                Three independent signal pillars — each targeting a distinct market dynamic — with regime-adaptive weighting.
+                Contrarian signal anatomy across the test window — exhaustion events, divergences, rubber-band stretch readings and macro regime context.
             </div>
 
             <div style="font-size:10px;font-weight:700;color:var(--text-dim);text-transform:uppercase;letter-spacing:0.08em;margin-bottom:8px">
-                ◆ Efficiency Ratio Trend (ERT)
+                ◆ Capitulation / Euphoria Detector (CED)
             </div>
             <div class="pnf-meta-strip" style="margin-bottom:18px">
-                <div class="pnf-meta-chip" style="border-color:rgba(0,212,255,0.2)">
-                    <div class="pnf-meta-chip__val" style="color:${erColor}">${m.avg_er}</div>
-                    <div class="pnf-meta-chip__label">Avg ER (0→1)</div>
-                </div>
-                <div class="pnf-meta-chip" style="border-color:rgba(0,212,255,0.2)">
-                    <div class="pnf-meta-chip__val" style="color:${erColor}">${m.er_trending_pct}%</div>
-                    <div class="pnf-meta-chip__label">Trending Bars</div>
-                </div>
-                <div class="pnf-meta-chip" style="border-color:rgba(0,212,255,0.15)">
-                    <div class="pnf-meta-chip__val" style="color:${erColor};font-size:13px">${erLabel}</div>
-                    <div class="pnf-meta-chip__label">ER Regime</div>
-                </div>
-            </div>
-
-            <div style="font-size:10px;font-weight:700;color:var(--text-dim);text-transform:uppercase;letter-spacing:0.08em;margin-bottom:8px">
-                ◆ Multi-Horizon Momentum (10 · 21 · 63 day)
-            </div>
-            <div class="pnf-meta-strip" style="margin-bottom:18px">
-                <div class="pnf-meta-chip" style="border-color:rgba(0,212,255,0.2)">
-                    <div class="pnf-meta-chip__val" style="color:${mhmColor}">${m.mhm_active_pct}%</div>
-                    <div class="pnf-meta-chip__label">Signal Active</div>
-                </div>
                 <div class="pnf-meta-chip" style="border-color:rgba(0,212,120,0.2)">
-                    <div class="pnf-meta-chip__val" style="color:${fullAgreeColor}">${m.mhm_full_agree_pct}%</div>
-                    <div class="pnf-meta-chip__label">All 3 Agree</div>
-                </div>
-                <div class="pnf-meta-chip" style="border-color:rgba(0,212,255,0.15)">
-                    <div class="pnf-meta-chip__val" style="color:var(--text-sec);font-size:11px">${(m.horizons||[10,21,63]).join(' · ')}d</div>
-                    <div class="pnf-meta-chip__label">Lookbacks Used</div>
-                </div>
-            </div>
-
-            <div style="font-size:10px;font-weight:700;color:var(--text-dim);text-transform:uppercase;letter-spacing:0.08em;margin-bottom:8px">
-                ◆ Volatility Regime Oscillator
-            </div>
-            <div class="pnf-meta-strip" style="margin-bottom:18px">
-                <div class="pnf-meta-chip" style="border-color:rgba(0,212,255,0.2)">
-                    <div class="pnf-meta-chip__val" style="color:${lowVolColor}">${m.low_vol_regime_pct}%</div>
-                    <div class="pnf-meta-chip__label">Breakout Mode</div>
+                    <div class="pnf-meta-chip__val" style="color:${capColor}">${m.cap_events}</div>
+                    <div class="pnf-meta-chip__label">Capitulation Events</div>
                 </div>
                 <div class="pnf-meta-chip" style="border-color:rgba(255,51,72,0.2)">
-                    <div class="pnf-meta-chip__val" style="color:${highVolColor}">${m.high_vol_regime_pct}%</div>
-                    <div class="pnf-meta-chip__label">Mean-Rev Mode</div>
+                    <div class="pnf-meta-chip__val" style="color:${euColor}">${m.eu_events}</div>
+                    <div class="pnf-meta-chip__label">Euphoria Events</div>
                 </div>
-                <div class="pnf-meta-chip" style="border-color:rgba(255,176,32,0.2)">
-                    <div class="pnf-meta-chip__val" style="color:${C.gold}">${m.neutral_regime_pct}%</div>
-                    <div class="pnf-meta-chip__label">Blended Mode</div>
+                <div class="pnf-meta-chip" style="border-color:rgba(74,158,255,0.2)">
+                    <div class="pnf-meta-chip__val" style="color:${m.bull_trend_pct>=50?C.green:m.bear_trend_pct>=30?C.red:C.gold}">${m.bull_trend_pct}% / ${m.bear_trend_pct}%</div>
+                    <div class="pnf-meta-chip__label">Bull / Bear Regime</div>
                 </div>
-                <div class="pnf-meta-chip" style="border-color:rgba(0,212,255,0.15)">
-                    <div class="pnf-meta-chip__val" style="color:${C.cyan}">${m.avg_vol_ratio}</div>
-                    <div class="pnf-meta-chip__label">Avg Vol Ratio</div>
+                <div class="pnf-meta-chip" style="border-color:rgba(74,158,255,0.2)">
+                    <div class="pnf-meta-chip__val" style="color:${C.gold}">${m.neutral_trend_pct}%</div>
+                    <div class="pnf-meta-chip__label">Neutral Regime</div>
+                </div>
+            </div>
+
+            <div style="font-size:10px;font-weight:700;color:var(--text-dim);text-transform:uppercase;letter-spacing:0.08em;margin-bottom:8px">
+                ◆ Momentum Exhaustion &amp; MACD Divergence (MED)
+            </div>
+            <div class="pnf-meta-strip" style="margin-bottom:18px">
+                <div class="pnf-meta-chip" style="border-color:rgba(0,212,120,0.2)">
+                    <div class="pnf-meta-chip__val" style="color:${divBullC}">${m.bull_div_n}</div>
+                    <div class="pnf-meta-chip__label">Bullish Divergences</div>
+                </div>
+                <div class="pnf-meta-chip" style="border-color:rgba(255,51,72,0.2)">
+                    <div class="pnf-meta-chip__val" style="color:${divBearC}">${m.bear_div_n}</div>
+                    <div class="pnf-meta-chip__label">Bearish Divergences</div>
+                </div>
+                <div class="pnf-meta-chip" style="border-color:rgba(74,158,255,0.15)">
+                    <div class="pnf-meta-chip__val" style="color:${C.blue};font-size:11px">ROC 5 vs 20</div>
+                    <div class="pnf-meta-chip__label">Excess Fade Method</div>
+                </div>
+            </div>
+
+            <div style="font-size:10px;font-weight:700;color:var(--text-dim);text-transform:uppercase;letter-spacing:0.08em;margin-bottom:8px">
+                ◆ Rubber-Band Stretch (RBS)
+            </div>
+            <div class="pnf-meta-strip" style="margin-bottom:18px">
+                <div class="pnf-meta-chip" style="border-color:rgba(74,158,255,0.2)">
+                    <div class="pnf-meta-chip__val" style="color:${stretchC}">${m.avg_stretch_atr}×</div>
+                    <div class="pnf-meta-chip__label">Avg Stretch (ATR)</div>
+                </div>
+                <div class="pnf-meta-chip" style="border-color:rgba(74,158,255,0.2)">
+                    <div class="pnf-meta-chip__val" style="color:${C.blue}">${m.max_stretch_atr}×</div>
+                    <div class="pnf-meta-chip__label">95th % Stretch</div>
+                </div>
+                <div class="pnf-meta-chip" style="border-color:rgba(74,158,255,0.15)">
+                    <div class="pnf-meta-chip__val" style="color:${C.blue};font-size:11px">SMA 20/50/200</div>
+                    <div class="pnf-meta-chip__label">MA Anchors</div>
                 </div>
             </div>
 
@@ -3358,8 +3357,8 @@ function renderBacktest(d){
                     <div class="pnf-meta-chip__val" style="color:${riskStops > 0 ? C.red : C.green}">${riskStops}</div>
                     <div class="pnf-meta-chip__label">Stops Triggered</div>
                 </div>
-                <div class="pnf-meta-chip" style="border-color:rgba(0,212,255,0.2)">
-                    <div class="pnf-meta-chip__val" style="color:${C.cyan}">2.5× ATR</div>
+                <div class="pnf-meta-chip" style="border-color:rgba(74,158,255,0.2)">
+                    <div class="pnf-meta-chip__val" style="color:${C.blue}">2.5× ATR</div>
                     <div class="pnf-meta-chip__label">Trail Multiplier</div>
                 </div>
                 <div class="pnf-meta-chip" style="border-color:rgba(255,51,72,0.2)">
@@ -3369,11 +3368,11 @@ function renderBacktest(d){
             </div>
 
             <div style="font-size:11px;color:var(--text-dim);line-height:1.75;border-top:1px solid var(--border);padding-top:10px">
-                <strong style="color:var(--text-sec)">Avg ER</strong> — mean Efficiency Ratio across the test window; ≥0.6 = consistently trending, &lt;0.35 = mostly choppy/rangebound.<br>
-                <strong style="color:var(--text-sec)">All 3 Agree %</strong> — % of bars where 10, 21 and 63-day momentum horizons all pointed the same direction; higher = more conviction.<br>
-                <strong style="color:var(--text-sec)">Breakout Mode %</strong> — % of bars where 10-day realised vol was &lt;85 % of 50-day vol (volatility compression); VRO uses BB momentum here.<br>
-                <strong style="color:var(--text-sec)">Mean-Rev Mode %</strong> — % of bars where vol was &gt;120 % of 50-day baseline (volatility expansion); VRO fades RSI extremes here.<br>
-                <strong style="color:var(--text-sec)">Stops Triggered</strong> — trades exited by ATR trailing stop or hard 15 % stop rather than signal reversal.
+                <strong style="color:var(--text-sec)">Capitulation Events</strong> — bars where high volume + close near lows scored &gt;0.45; each is a potential panic-bottom entry.<br>
+                <strong style="color:var(--text-sec)">Euphoria Events</strong> — bars where high volume + close near highs scored &gt;0.45; each is a potential blow-off-top exit.<br>
+                <strong style="color:var(--text-sec)">MACD Divergences</strong> — bars where price direction contradicted MACD histogram direction; a classic pre-reversal fingerprint.<br>
+                <strong style="color:var(--text-sec)">Avg Stretch</strong> — mean distance from the weighted MA basket in ATR units; higher values mean the ticker spent more time overextended.<br>
+                <strong style="color:var(--text-sec)">Bull/Bear Regime %</strong> — % of test-window bars where SMA 50 &gt; SMA 200 (bull) or SMA 50 &lt; SMA 200 (bear); affects trend guard scaling.
             </div>
         </div>`;
     }

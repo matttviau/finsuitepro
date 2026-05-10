@@ -2677,139 +2677,191 @@ def _compute_pnf_bb_vol_signal(df: pd.DataFrame, reversal: int = 5) -> tuple:
     return combined, senti_meta
 
 
-# ── AdaptiveEdge Strategy ───────────────────────────────────────────────────
+# ── CounterFlow Strategy ────────────────────────────────────────────────────
 
-def _compute_adaptiveedge_signal(df: pd.DataFrame) -> tuple:
+def _compute_counterflow_signal(df: pd.DataFrame) -> tuple:
     """
-    AdaptiveEdge — Three uncorrelated, regime-aware signal pillars.
+    CounterFlow — Advanced contrarian strategy with three independent signal pillars.
 
-    ┌──────────────────────────────────────────┬────────┬──────────────────────────────────────┐
-    │ Pillar                                   │ Weight │ Role                                 │
-    ├──────────────────────────────────────────┼────────┼──────────────────────────────────────┤
-    │ Efficiency Ratio Trend (ERT)             │  35 %  │ Trend quality filter + SMA alignment │
-    │ Multi-Horizon Momentum (MHM)             │  40 %  │ 10/21/63-day cross-timeframe agreement│
-    │ Volatility Regime Oscillator (VRO)       │  25 %  │ Regime-adaptive breakout/reversion   │
-    └──────────────────────────────────────────┴────────┴──────────────────────────────────────┘
+    ┌────────────────────────────────────────────┬────────┬────────────────────────────────────────┐
+    │ Pillar                                     │ Weight │ Role                                   │
+    ├────────────────────────────────────────────┼────────┼────────────────────────────────────────┤
+    │ Capitulation / Euphoria Detector (CED)     │  40 %  │ Volume-bar exhaustion + streak amplify │
+    │ Momentum Exhaustion & MACD Divergence (MED)│  35 %  │ Short vs medium ROC + RSI + MACD div   │
+    │ Rubber-Band Stretch (RBS)                  │  25 %  │ ATR-normalised MA distances + BB %B    │
+    └────────────────────────────────────────────┴────────┴────────────────────────────────────────┘
 
-    Efficiency Ratio (Kaufman)
-        ER = |net price move| / |total path length| over a 20-bar window.
-        ER → 1 means the market moved efficiently in one direction (strong trend).
-        ER → 0 means price thrashed back and forth with no net progress (choppy).
-        Signal = price_direction × ER^0.7 — the exponent de-emphasises middling
-        readings, rewarding only clean trending moves.  Blended 70/30 with
-        SMA 50/200 alignment for long-term trend confirmation.
+    Core philosophy: buy exhaustion, sell euphoria — go against the crowd at price extremes.
 
-    Multi-Horizon Momentum (MHM)
-        Sharpe-normalised rate-of-change at three lookback horizons (10, 21, 63 days).
-        mom[h] = ROC[h] / (annualised_rolling_vol[h])
-        Agreement filter: full signal when all three horizons agree in direction;
-        60 % signal when any two agree; zero when all three disagree.  This kills
-        whipsaw trades during choppy, directionless periods.
+    Capitulation / Euphoria Detector
+        Looks for selling exhaustion (high volume + close near bar lows + consecutive down days)
+        and buying euphoria (high volume + close near bar highs + consecutive up days).
+        Vol score: (vol / 20d_avg_vol − 1) / 2, normalised 0 → 1 as volume triples average.
+        Bar position: (Close − Low) / (High − Low) — 0 = at lows, 1 = at highs.
+        A streak counter tracks consecutive same-direction days (capped at 7); each extra day
+        in the same direction adds 7 % contrarian signal strength — a 5-day down-streak adds
+        +0.35 to the bullish score before clipping.  A macro trend guard (SMA 50/200) lightly
+        amplifies signals that align with dip-buying in bull markets or rally-fading in bear.
 
-    Volatility Regime Oscillator (VRO)
-        Compares 10-day realised vol to 50-day realised vol.
-        Vol-ratio < 0.85  (compression) → breakout mode: Bollinger Band %B
-            momentum signal; price near upper band = building breakout.
-        Vol-ratio > 1.20  (expansion) → mean-reversion mode: RSI fade signal;
-            extreme RSI readings are faded back toward the mean.
-        Intermediate: linear blend between both sub-signals.
+    Momentum Exhaustion & MACD Divergence
+        Short-term excess: (ROC_5 − ROC_20) / (2 × ATR%) — measures how much the
+        5-day move overshoots the 20-day trend direction (contrarian fade of the overshoot).
+        RSI fade: extreme RSI readings (≤35 bullish, ≥65 bearish) scaled by distance from 50.
+        MACD divergence: price declining while MACD histogram is positive/rising → hidden
+        strength → bullish boost. Mirror image on the bearish side.
 
-    Returns (signal_series, ae_meta_dict).
+    Rubber-Band Stretch
+        Weighted distance from three moving averages (SMA 20/50/200) normalised by ATR —
+        the "rubber band" metaphor: the further price stretches below its MAs in ATR units,
+        the harder it snaps back. Blended 60/40 with Bollinger Band %B inversion.
+        A 3.5-ATR stretch maps to ±1.0 signal.
+
+    Macro Trend Guard
+        SMA 50 > SMA 200 and price above SMA 200 = bull trend → scale-up dip-buy signals,
+        scale-down euphoria-sell signals by 20 %.  Mirror for bear.  Contrarian works best
+        with, not against, the dominant multi-month trend.
+
+    Returns (signal_series, cf_meta_dict).
     """
     prices = df["Close"]
-    n      = len(prices)
+    highs  = df["High"]   if "High"   in df.columns else prices
+    lows   = df["Low"]    if "Low"    in df.columns else prices
+    vols   = (df["Volume"].fillna(0) if "Volume" in df.columns
+              else pd.Series(1.0, index=df.index))
+    n = len(prices)
 
     if n < 65:
         return pd.Series(np.zeros(n), index=df.index), {}
 
-    ret = prices.pct_change().fillna(0)
+    ret     = prices.pct_change().fillna(0)
+    ret_arr = ret.values.astype(float)
 
-    # ── PILLAR 1: Efficiency Ratio Trend (35 %) ──────────────────────────────
-    er_w      = 20
-    direction = prices.diff(er_w).abs()
-    path      = prices.diff().abs().rolling(er_w, min_periods=er_w).sum()
-    er_vals   = (direction / path.replace(0, np.nan)).fillna(0).clip(0, 1)
-    price_dir = np.sign(prices.diff(er_w)).fillna(0)
-    er_signal = (price_dir * er_vals.pow(0.7)).clip(-1, 1)
+    atr_s = (df["ATR"].ffill().fillna(0) if "ATR" in df.columns
+             else prices.rolling(14).std().fillna(0))
+    atr_s = atr_s.replace(0, np.nan).fillna(prices * 0.01)
 
-    # Long-term trend alignment via SMA 50 / 200
-    if "SMA_50" in df.columns and "SMA_200" in df.columns:
-        sma_gap = ((df["SMA_50"] - df["SMA_200"])
-                   / df["SMA_200"].replace(0, np.nan) / 0.05).clip(-1, 1).fillna(0)
-    else:
-        sma_gap = pd.Series(0.0, index=df.index)
+    sma20  = prices.rolling(20,  min_periods=10).mean()
+    sma50  = prices.rolling(50,  min_periods=25).mean()
+    sma200 = prices.rolling(200, min_periods=80).mean()
 
-    p1 = (er_signal * 0.70 + sma_gap * 0.30).clip(-1, 1)
+    # ── Macro trend guard ────────────────────────────────────────────────────
+    # +0.20 bias when in confirmed bull trend; −0.20 in bear trend
+    bull_trend = (prices > sma200) & (sma50 > sma200)
+    bear_trend = (prices < sma200) & (sma50 < sma200)
+    trend_bias = pd.Series(0.0, index=df.index)
+    trend_bias[bull_trend] =  0.20
+    trend_bias[bear_trend] = -0.20
 
-    # ── PILLAR 2: Multi-Horizon Momentum (40 %) ──────────────────────────────
-    horizons     = [10, 21, 63]
-    mom_signals  = []
-    for h in horizons:
-        roc   = prices.pct_change(h).fillna(0)
-        vol_h = ret.rolling(h, min_periods=max(5, h // 2)).std().replace(0, np.nan)
-        # Sharpe-normalised momentum clipped to ±1
-        s_mom = (roc / (vol_h * np.sqrt(252))).clip(-2, 2).fillna(0) * 0.5
-        mom_signals.append(s_mom)
+    # ── PILLAR 1: Capitulation / Euphoria Detector (40 %) ────────────────────
+    vol_avg   = vols.rolling(20, min_periods=8).mean().replace(0, np.nan)
+    vol_ratio = (vols / vol_avg).fillna(1.0).clip(0.0, 6.0)
+    # Normalise: score 0 at avg vol, 1 at 3× avg vol
+    vol_score = ((vol_ratio - 1.0) / 2.0).clip(0.0, 1.0)
 
-    signs    = pd.DataFrame({i: np.sign(m) for i, m in enumerate(mom_signals)})
-    avg_mom  = sum(mom_signals) / len(horizons)
-    all_agree  = (signs[0] == signs[1]) & (signs[1] == signs[2])
-    two_agree  = ((signs[0] == signs[1]) | (signs[1] == signs[2]) | (signs[0] == signs[2]))
+    bar_range = (highs - lows).replace(0, np.nan)
+    bar_pos   = ((prices - lows) / bar_range).fillna(0.5).clip(0.0, 1.0)
+    # Exhaustion zones: near lows (bullish) or near highs (bearish)
+    dn_exhaust = ((0.38 - bar_pos) / 0.38).clip(0.0, 1.0)   # 1 at lows, 0 at mid
+    up_exhaust = ((bar_pos - 0.62) / 0.38).clip(0.0, 1.0)   # 1 at highs, 0 at mid
 
-    p2 = pd.Series(0.0, index=df.index)
-    p2[all_agree]                   = avg_mom[all_agree]
-    p2[two_agree & ~all_agree]      = avg_mom[two_agree & ~all_agree] * 0.60
-    p2 = p2.clip(-1, 1)
+    price_dir = np.sign(ret)
+    cap_raw   = pd.Series(0.0, index=df.index)
+    dn = price_dir < 0
+    up = price_dir > 0
+    # Down day capitulation → bullish contrarian
+    cap_raw[dn] = (vol_score[dn] * 0.55 + dn_exhaust[dn] * 0.45).clip(0, 1)
+    # Up day euphoria → bearish contrarian
+    cap_raw[up] = -(vol_score[up] * 0.55 + up_exhaust[up] * 0.45).clip(0, 1)
 
-    # ── PILLAR 3: Volatility Regime Oscillator (25 %) ────────────────────────
-    vol_short = ret.rolling(10, min_periods=5).std().fillna(0)
-    vol_long  = ret.rolling(50, min_periods=20).std().replace(0, np.nan)
-    vol_ratio = (vol_short / vol_long).fillna(1.0)
+    # Streak amplifier: N consecutive same-direction bars → +7 % per extra day
+    streak_arr = np.zeros(n)
+    cur_str = 0
+    cur_dir = 0
+    for i in range(1, n):
+        d = int(np.sign(ret_arr[i]))
+        if d != 0:
+            cur_str = min(cur_str + 1, 7) if d == cur_dir else 1
+            cur_dir = d
+        streak_arr[i] = cur_str * (-cur_dir)   # down streak → +ve = bullish contrarian
 
-    # Breakout sub-signal (low vol → ride compression)
+    streak_s     = pd.Series(streak_arr, index=df.index)
+    streak_boost = (streak_s.abs() * 0.07).clip(0.0, 0.40)
+    streak_sign  = pd.Series(np.sign(streak_arr), index=df.index)
+    p1 = (cap_raw + streak_boost * streak_sign).clip(-1, 1)
+
+    # Trend guard: amplify contrarian signals in the macro trend's favour
+    # (dip-buying in bull, rally-fading in bear) — 20 % boost/cut
+    trend_mult = (1.0 + trend_bias * (p1 / (p1.abs() + 1e-9))).clip(0.7, 1.3)
+    p1 = (p1 * trend_mult).clip(-1, 1)
+
+    # ── PILLAR 2: Momentum Exhaustion & MACD Divergence (35 %) ───────────────
+    roc5  = prices.pct_change(5).fillna(0)
+    roc20 = prices.pct_change(20).fillna(0)
+    atr_pct = (atr_s / prices.replace(0, np.nan)).fillna(0.01)
+
+    # Short-term excess decline vs medium-term → over-extended short-term move
+    excess     = roc5 - roc20
+    excess_sig = (-excess / (atr_pct * 2.0 + 1e-8)).clip(-1, 1)
+
+    # RSI fade: below 35 = buy, above 65 = sell, scaled by distance
+    rsi = df["RSI"].fillna(50) if "RSI" in df.columns else pd.Series(50.0, index=df.index)
+    rsi_fade = pd.Series(0.0, index=df.index)
+    rsi_fade[rsi <= 35] = ((35.0 - rsi[rsi <= 35]) / 35.0).clip(0, 1)
+    rsi_fade[rsi >= 65] = (-(rsi[rsi >= 65] - 65.0) / 35.0).clip(-1, 0)
+
+    # MACD divergence: price falling but MACD histogram positive/rising → hidden strength
+    macd_div = pd.Series(0.0, index=df.index)
+    if "MACD_hist" in df.columns:
+        hist       = df["MACD_hist"].fillna(0)
+        hist_rising  = hist > hist.shift(3).fillna(hist)
+        hist_falling = hist < hist.shift(3).fillna(hist)
+        bull_div_m = (roc5 < -atr_pct * 0.5) & hist_rising   # price down, MACD improving
+        bear_div_m = (roc5 >  atr_pct * 0.5) & hist_falling  # price up, MACD deteriorating
+        macd_div[bull_div_m] = ((-roc5[bull_div_m]) / (atr_pct[bull_div_m] + 1e-8)).clip(0, 0.50)
+        macd_div[bear_div_m] = -(roc5[bear_div_m]  / (atr_pct[bear_div_m]  + 1e-8)).clip(0, 0.50)
+
+    p2 = (excess_sig * 0.40 + rsi_fade * 0.35 + macd_div * 0.25).clip(-1, 1)
+
+    # ── PILLAR 3: Rubber-Band Stretch (25 %) ─────────────────────────────────
+    dist20  = ((prices - sma20)  / atr_s).fillna(0)
+    dist50  = ((prices - sma50)  / atr_s).fillna(0)
+    dist200 = ((prices - sma200) / atr_s).fillna(0)
+    # Weighted stretch: negative = below MAs = bullish contrarian snap-back expected
+    stretch     = -(dist20 * 0.45 + dist50 * 0.35 + dist200 * 0.20)
+    stretch_sig = (stretch / 3.5).clip(-1, 1)   # 3.5 ATR stretch → ±1
+
     if "BB_upper" in df.columns and "BB_lower" in df.columns:
-        spread      = (df["BB_upper"] - df["BB_lower"]).replace(0, np.nan)
-        pct_b       = (prices - df["BB_lower"]) / spread
-        bb_breakout = ((pct_b - 0.5) * 2).clip(-1, 1).fillna(0)
+        spread = (df["BB_upper"] - df["BB_lower"]).replace(0, np.nan)
+        pct_b  = (prices - df["BB_lower"]) / spread
+        bb_con = (-(2.0 * pct_b - 1.0)).clip(-1, 1).fillna(0)
     else:
-        bb_breakout = pd.Series(0.0, index=df.index)
+        bb_con = pd.Series(0.0, index=df.index)
 
-    # Mean-reversion sub-signal (high vol → fade RSI extremes)
-    if "RSI" in df.columns:
-        rsi    = df["RSI"].fillna(50)
-        mr_sig = pd.Series(0.0, index=df.index)
-        mr_sig = mr_sig.where(rsi >= 30, ((30 - rsi) / 30.0).clip(0, 1))
-        mr_sig = mr_sig.where(rsi <= 70, (-(rsi - 70) / 30.0).clip(-1, 0))
-    else:
-        mr_sig = pd.Series(0.0, index=df.index)
-
-    # Blend: 0 = full breakout, 1 = full mean-reversion
-    blend = ((vol_ratio - 0.85) / (1.20 - 0.85)).clip(0, 1)
-    p3    = (bb_breakout * (1.0 - blend) + mr_sig * blend).clip(-1, 1)
-    # Hard overrides at regime extremes
-    p3 = p3.where(vol_ratio >= 0.85, bb_breakout)
-    p3 = p3.where(vol_ratio <= 1.20, mr_sig)
+    p3 = (stretch_sig * 0.60 + bb_con * 0.40).clip(-1, 1)
 
     # ── Weighted blend ────────────────────────────────────────────────────────
-    combined = (p1 * 0.35 + p2 * 0.40 + p3 * 0.25).clip(-1, 1)
+    combined = (p1 * 0.40 + p2 * 0.35 + p3 * 0.25).clip(-1, 1)
 
     # ── Diagnostics meta ─────────────────────────────────────────────────────
-    vr       = vol_ratio.dropna()
-    low_pct  = round(float((vr < 0.85).mean()) * 100, 1)
-    high_pct = round(float((vr > 1.20).mean()) * 100, 1)
+    cap_events = int((cap_raw >  0.45).sum())
+    eu_events  = int((cap_raw < -0.45).sum())
+    bull_div_n = int((macd_div > 0.10).sum()) if "MACD_hist" in df.columns else 0
+    bear_div_n = int((macd_div < -0.10).sum()) if "MACD_hist" in df.columns else 0
+    max_stretch = round(float(stretch.abs().quantile(0.95)), 2)
+    avg_stretch = round(float(stretch.abs().mean()), 2)
 
-    ae_meta = {
-        'avg_er':              round(float(er_vals.dropna().mean()), 3),
-        'er_trending_pct':     round(float((er_vals > 0.55).mean()) * 100, 1),
-        'mhm_active_pct':      round(float((p2.abs() > 0.05).mean()) * 100, 1),
-        'mhm_full_agree_pct':  round(float(all_agree.mean()) * 100, 1),
-        'low_vol_regime_pct':  low_pct,
-        'high_vol_regime_pct': high_pct,
-        'neutral_regime_pct':  round(100 - low_pct - high_pct, 1),
-        'avg_vol_ratio':       round(float(vr.mean()), 3),
-        'horizons':            horizons,
+    cf_meta = {
+        'cap_events':        cap_events,
+        'eu_events':         eu_events,
+        'bull_div_n':        bull_div_n,
+        'bear_div_n':        bear_div_n,
+        'avg_stretch_atr':   avg_stretch,
+        'max_stretch_atr':   max_stretch,
+        'bull_trend_pct':    round(float(bull_trend.mean()) * 100, 1),
+        'bear_trend_pct':    round(float(bear_trend.mean()) * 100, 1),
+        'neutral_trend_pct': round(float((~bull_trend & ~bear_trend).mean()) * 100, 1),
     }
-    return combined, ae_meta
+    return combined, cf_meta
 
 
 def run_backtest(ticker: str, start_date: str, end_date: str,
@@ -2822,7 +2874,7 @@ def run_backtest(ticker: str, start_date: str, end_date: str,
     df = compute_indicators(raw)
 
     senti_meta = {}
-    ae_meta    = {}
+    cf_meta    = {}
     if strategy == 'sma_crossover':
         signal_series = _compute_sma_crossover_signal(df)
     elif strategy == 'momentum':
@@ -2831,8 +2883,8 @@ def run_backtest(ticker: str, start_date: str, end_date: str,
         signal_series = _compute_macro_composite_signal(df)
     elif strategy == 'sentimomentum':
         signal_series, senti_meta = _compute_pnf_bb_vol_signal(df)
-    elif strategy == 'adaptiveedge':
-        signal_series, ae_meta = _compute_adaptiveedge_signal(df)
+    elif strategy == 'counterflow':
+        signal_series, cf_meta = _compute_counterflow_signal(df)
     else:  # 'combined'
         signal_series = _compute_signal_series(df)
 
@@ -2979,8 +3031,8 @@ def run_backtest(ticker: str, start_date: str, end_date: str,
     }
     if senti_meta:
         result['senti_meta'] = senti_meta
-    if ae_meta:
-        result['ae_meta'] = ae_meta
+    if cf_meta:
+        result['cf_meta'] = cf_meta
     return result
 
 
@@ -3808,7 +3860,7 @@ def api_backtest(ticker):
         lookback_days = request.args.get('lookback', 120, type=int)
         strategy = request.args.get('strategy', 'combined')
         if strategy not in ('combined', 'sma_crossover', 'momentum',
-                            'macro_composite', 'sentimomentum', 'adaptiveedge'):
+                            'macro_composite', 'sentimomentum', 'counterflow'):
             strategy = 'combined'
         result = run_backtest(ticker.upper(), start_date, end_date,
                               initial_capital, buy_thresh, sell_thresh, lookback_days, strategy)

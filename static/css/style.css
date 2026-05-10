@@ -3402,29 +3402,29 @@ button.econ-view-btn {
     -webkit-text-fill-color: transparent;
 }
 
-/* ── AdaptiveEdge card ───────────────────────────────────────────────────── */
-.bt-strategy-card--ae {
-    border-color: rgba(0, 212, 255, 0.28);
-    background: linear-gradient(135deg, var(--card) 0%, rgba(0, 212, 255, 0.04) 100%);
+/* ── CounterFlow card ────────────────────────────────────────────────────── */
+.bt-strategy-card--cf {
+    border-color: rgba(74, 158, 255, 0.28);
+    background: linear-gradient(135deg, var(--card) 0%, rgba(74, 158, 255, 0.05) 100%);
     position: relative;
 }
-.bt-strategy-card--ae:hover {
-    border-color: rgba(0, 212, 255, 0.55);
+.bt-strategy-card--cf:hover {
+    border-color: rgba(74, 158, 255, 0.55);
 }
-.bt-strategy-card--ae.active {
-    border-color: var(--cyan);
-    border-top-color: var(--cyan);
-    background: rgba(0, 212, 255, 0.06);
-    box-shadow: 0 0 0 2px rgba(0, 212, 255, 0.18), 0 4px 18px rgba(0, 212, 255, 0.14);
+.bt-strategy-card--cf.active {
+    border-color: var(--blue);
+    border-top-color: var(--blue);
+    background: rgba(74, 158, 255, 0.07);
+    box-shadow: 0 0 0 2px rgba(74, 158, 255, 0.20), 0 4px 18px rgba(74, 158, 255, 0.14);
 }
-.bt-strategy-card--ae .bt-strategy-card__icon {
-    background: linear-gradient(135deg, var(--cyan), var(--green));
+.bt-strategy-card--cf .bt-strategy-card__icon {
+    background: linear-gradient(135deg, var(--blue), var(--purple));
     -webkit-background-clip: text; background-clip: text;
     -webkit-text-fill-color: transparent;
 }
-.bt-strategy-card__badge--ae {
-    background: linear-gradient(90deg, var(--cyan), var(--green));
-    color: #000;
+.bt-strategy-card__badge--cf {
+    background: linear-gradient(90deg, var(--blue), var(--purple));
+    color: #fff;
     font-weight: 800;
 }
 
