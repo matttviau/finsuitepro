@@ -3871,7 +3871,12 @@ document.addEventListener('DOMContentLoaded', () => {
         }
         // Live search debounce (main results table)
         clearTimeout(_leDebounce);
-        if (val.length >= 2) _leDebounce = setTimeout(leSearch, 450);
+        if (val.length >= 2) {
+            _leDebounce = setTimeout(leSearch, 450);
+        } else if (val.length === 0) {
+            // Show all securities when search is cleared
+            _leDebounce = setTimeout(leSearch, 300);
+        }
     });
 
     inp.addEventListener('focus', () => {
@@ -3884,7 +3889,7 @@ document.addEventListener('DOMContentLoaded', () => {
         if (!e.target.closest('.le-controls-block')) _leCloseDropdown();
     });
 
-    // ── Restore previous search results (no network call needed) ──────────
+    // ── Restore previous search results or auto-load all on first visit ──
     const saved = _loadState('le');
     if (saved && saved.results && saved.results.length > 0) {
         // Restore query input
@@ -3915,6 +3920,9 @@ document.addEventListener('DOMContentLoaded', () => {
             total:   saved.total || saved.results.length,
             intent:  saved.intent || {},
         });
+    } else {
+        // Auto-load all securities so the page is never empty
+        leSearch();
     }
 });
 
@@ -3928,9 +3936,6 @@ function leSearch() {
         ipoAfter:  document.getElementById('le-ipo-after')?.value.trim()  || '',
         ipoBefore: document.getElementById('le-ipo-before')?.value.trim() || '',
     };
-    const hasFilter = Object.values(filters).some(v => v);
-    if (!query && !hasFilter) return;
-
     LE.lastQuery = query;
     LE.page      = 1;
     if (query) _leSaveHistory(query);
@@ -3979,10 +3984,7 @@ function leClearSearch() {
     LE.allResults = [];
     LE.lastQuery  = '';
     _clearState('le');   // wipe persisted results
-    const badge = document.getElementById('le-badge');
-    if (badge) { badge.textContent = '0'; badge.style.display = 'none'; }
-    const area = document.getElementById('le-results-area');
-    if (area) area.innerHTML = _leEmptyState();
+    leSearch();          // reload all securities
 }
 
 function leClearFilters() {
@@ -3992,6 +3994,40 @@ function leClearFilters() {
     ['le-ipo-after','le-ipo-before'].forEach(id => {
         const el = document.getElementById(id); if (el) el.value = '';
     });
+}
+
+/* ── Quick-filter chip helpers ───────────────────────────────────────────── */
+function leQuickFilter(preset) {
+    // Reset all filter controls first
+    const qinp = document.getElementById('le-query');
+    if (qinp) { qinp.value = ''; document.getElementById('leClearBtn').style.display = 'none'; }
+    ['le-exchange','le-type','le-status','le-ipo-after','le-ipo-before'].forEach(id => {
+        const el = document.getElementById(id); if (el) el.value = '';
+    });
+
+    // Apply the chosen preset
+    const typeEl   = document.getElementById('le-type');
+    const statusEl = document.getElementById('le-status');
+    const exchEl   = document.getElementById('le-exchange');
+
+    if (preset === 'etf')       { if (typeEl)   typeEl.value   = 'ETF';      }
+    if (preset === 'stock')     { if (typeEl)    typeEl.value   = 'Stock';    }
+    if (preset === 'active')    { if (statusEl)  statusEl.value = 'Active';   }
+    if (preset === 'delisted')  { if (statusEl)  statusEl.value = 'Delisted'; }
+    if (preset === 'nasdaq')    { if (exchEl)    exchEl.value   = 'NASDAQ';   }
+    if (preset === 'nyse')      { if (exchEl)    exchEl.value   = 'NYSE';     }
+
+    // Highlight the active chip
+    document.querySelectorAll('.le-chip').forEach(c => c.classList.remove('le-chip--active'));
+    const active = document.querySelector(`.le-chip[data-preset="${preset}"]`);
+    if (active) active.classList.add('le-chip--active');
+    else {
+        const allChip = document.querySelector('.le-chip[data-preset="all"]');
+        if (allChip) allChip.classList.add('le-chip--active');
+    }
+
+    _clearState('le');
+    leSearch();
 }
 
 function leUseExample(btn) {
@@ -4042,7 +4078,9 @@ function _leRenderResults(data) {
         <div class="le-results-header">
             <div class="le-results-count">
                 <strong>${data.total.toLocaleString()}</strong> result${data.total !== 1 ? 's' : ''}
-                ${LE.lastQuery ? `<span class="le-results-query">for "${_leEsc(LE.lastQuery)}"</span>` : ''}
+                ${LE.lastQuery
+                    ? `<span class="le-results-query">for "${_leEsc(LE.lastQuery)}"</span>`
+                    : `<span class="le-results-query">— all securities</span>`}
             </div>
             <div style="display:flex;gap:6px;align-items:center">
                 <button class="le-action-btn" onclick="leDownloadCSV()">⬇ Export CSV</button>

@@ -757,66 +757,75 @@ function switchSignalTab(btn, tab){
 <div class="module-header">
     <span class="module-header__dot" style="color:var(--green)">●</span>
     <span class="module-header__title">Listings Explorer</span>
-    <span class="module-header__sub">Search {{ "{:,}".format(le_stats.get('total',0)) }} securities with natural language or structured filters</span>
+    <span class="module-header__sub">{{ "{:,}".format(le_stats.get('total',0)) }} securities · natural language search &amp; structured filters</span>
     <span class="module-header__tag" style="background:var(--green)">LIST</span>
     <button class="help-btn" onclick="showHelp('listings')" title="Help & Instructions">? Help</button>
 </div>
 
-<!-- Dataset stat chips -->
+<!-- Dataset stat chips (clickable quick-filters) -->
 <div class="le-stat-row">
-    <div class="le-stat-chip">
-        <span class="le-stat-val">{{ "{:,}".format(le_stats.get('total',0)) }}</span> total
+    <div class="le-stat-chip le-stat-chip--clickable le-chip le-chip--active" data-preset="all" onclick="leQuickFilter('all')" title="Show all securities">
+        <span class="le-stat-val">{{ "{:,}".format(le_stats.get('total',0)) }}</span> Total
     </div>
-    <div class="le-stat-chip le-stat-chip--blue">
+    <div class="le-stat-chip le-stat-chip--blue le-stat-chip--clickable le-chip" data-preset="etf" onclick="leQuickFilter('etf')" title="Filter by ETFs">
         <span class="le-stat-val">{{ le_stats.get('etfs',0) }}</span> ETFs
     </div>
-    <div class="le-stat-chip le-stat-chip--purple">
+    <div class="le-stat-chip le-stat-chip--purple le-stat-chip--clickable le-chip" data-preset="stock" onclick="leQuickFilter('stock')" title="Filter by Stocks">
         <span class="le-stat-val">{{ le_stats.get('stocks',0) }}</span> Stocks
     </div>
-    <div class="le-stat-chip le-stat-chip--green">
+    <div class="le-stat-chip le-stat-chip--green le-stat-chip--clickable le-chip" data-preset="active" onclick="leQuickFilter('active')" title="Active only">
         <span class="le-stat-val">{{ le_stats.get('active',0) }}</span> Active
     </div>
-    <div class="le-stat-chip le-stat-chip--red">
+    <div class="le-stat-chip le-stat-chip--red le-stat-chip--clickable le-chip" data-preset="delisted" onclick="leQuickFilter('delisted')" title="Delisted only">
         <span class="le-stat-val">{{ le_stats.get('delisted',0) }}</span> Delisted
     </div>
-    <div class="le-stat-chip">
-        <span class="le-stat-val">{{ le_stats.get('exchanges',0) }}</span> Exchanges
+    <div class="le-stat-chip le-stat-chip--clickable le-chip" data-preset="nasdaq" onclick="leQuickFilter('nasdaq')" title="NASDAQ listings">
+        <span class="le-stat-val" style="font-size:12px">NASDAQ</span>
+    </div>
+    <div class="le-stat-chip le-stat-chip--clickable le-chip" data-preset="nyse" onclick="leQuickFilter('nyse')" title="NYSE listings">
+        <span class="le-stat-val" style="font-size:12px">NYSE</span>
     </div>
 </div>
 
 <!-- Search + Filters -->
 <div class="controls le-controls-block">
-    <div class="controls__row" style="flex-wrap:wrap;gap:8px">
+    <div class="controls__row" style="flex-wrap:wrap;gap:8px;align-items:center">
         <div class="le-search-box" id="leSearchBoxWrap">
             <span class="le-search-icon">🔍</span>
             <input type="text" id="le-query" class="controls__input le-search-input"
-                   placeholder='Try "Goldman Sachs ETFs" or "energy stocks IPO before 2000"…'
+                   placeholder='Search by name, ticker, sector… e.g. "Goldman Sachs ETFs"'
                    autocomplete="off" spellcheck="false" />
-            <button class="le-clear-btn" id="leClearBtn" onclick="leClearSearch()" style="display:none" title="Clear">✕</button>
+            <button class="le-clear-btn" id="leClearBtn" onclick="leClearSearch()" style="display:none" title="Clear search">✕</button>
         </div>
-        <div class="controls__sep"></div>
-        <select class="controls__input le-select" id="le-exchange" onchange="leSearch()">
-            <option value="">All Exchanges</option>
-            <option>NASDAQ</option><option>NYSE</option>
-            <option>NYSE ARCA</option><option>BATS</option><option>NYSE MKT</option>
-        </select>
-        <select class="controls__input le-select" id="le-type" onchange="leSearch()">
-            <option value="">All Types</option>
-            <option value="ETF">ETF</option>
-            <option value="Stock">Stock</option>
-        </select>
-        <select class="controls__input le-select" id="le-status" onchange="leSearch()">
-            <option value="">Any Status</option>
-            <option value="Active">Active</option>
-            <option value="Delisted">Delisted</option>
-        </select>
-        <input type="text" class="controls__input le-year-input" id="le-ipo-after"
-               placeholder="IPO after (YYYY)" maxlength="4" onchange="leSearch()" />
-        <input type="text" class="controls__input le-year-input" id="le-ipo-before"
-               placeholder="IPO before (YYYY)" maxlength="4" onchange="leSearch()" />
-        <button class="btn btn--primary btn--sm" onclick="leSearch()">Search</button>
-        <button class="btn btn--sm" onclick="leClearFilters()"
-                style="background:transparent;color:var(--text-sec);border:1px solid var(--border)">Clear</button>
+        <div class="le-filter-group">
+            <select class="controls__input le-select" id="le-exchange" onchange="leSearch()">
+                <option value="">All Exchanges</option>
+                <option>NASDAQ</option><option>NYSE</option>
+                <option>NYSE ARCA</option><option>BATS</option><option>NYSE MKT</option>
+            </select>
+            <select class="controls__input le-select" id="le-type" onchange="leSearch()">
+                <option value="">All Types</option>
+                <option value="ETF">ETF</option>
+                <option value="Stock">Stock</option>
+            </select>
+            <select class="controls__input le-select" id="le-status" onchange="leSearch()">
+                <option value="">Any Status</option>
+                <option value="Active">Active</option>
+                <option value="Delisted">Delisted</option>
+            </select>
+        </div>
+        <div class="le-filter-group le-filter-group--ipo">
+            <span class="le-filter-label">IPO</span>
+            <input type="text" class="controls__input le-year-input" id="le-ipo-after"
+                   placeholder="After YYYY" maxlength="4" onchange="leSearch()" />
+            <span class="le-filter-sep">–</span>
+            <input type="text" class="controls__input le-year-input" id="le-ipo-before"
+                   placeholder="Before YYYY" maxlength="4" onchange="leSearch()" />
+        </div>
+        <div class="le-action-group">
+            <button class="btn btn--primary btn--sm" onclick="leSearch()">Search</button>
+            <button class="btn btn--sm le-reset-btn" onclick="leClearSearch()" title="Reset all filters">↺ Reset</button>
+        </div>
     </div>
     <!-- Autocomplete dropdown (positioned relative to .le-controls-block) -->
     <div class="le-dropdown" id="le-dropdown" style="display:none"></div>
@@ -832,21 +841,8 @@ function switchSignalTab(btn, tab){
 
 <!-- Results panel -->
 <div id="le-results" class="tab-content active">
-    <div id="le-loading" class="loading" style="display:none"><div class="spinner"></div> Searching…</div>
-    <div id="le-results-area">
-        <div class="le-empty-state">
-            <div class="le-empty-icon">🔭</div>
-            <div class="le-empty-title">Search the Universe</div>
-            <p style="color:var(--text-sec);margin:8px 0 20px;font-size:13px">
-                Search across {{ "{:,}".format(le_stats.get('total',0)) }} securities by name, symbol, sector, or strategy.
-            </p>
-            <div class="le-examples">
-                {% for ex in ['Goldman Sachs ETFs','energy stocks on NYSE','tech IPOs after 2020','delisted NASDAQ stocks','healthcare ETFs'] %}
-                <button class="quick-btn" onclick="leUseExample(this)">{{ ex }}</button>
-                {% endfor %}
-            </div>
-        </div>
-    </div>
+    <div id="le-loading" class="loading" style="display:flex"><div class="spinner"></div> Loading securities…</div>
+    <div id="le-results-area" style="display:none"></div>
 </div>
 
 <!-- Analytics panel -->
