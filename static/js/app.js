@@ -921,7 +921,8 @@ function renderTechStats(d){
         ['52W High',  `$${s.high_52w}`,      C.green,    ''],
         ['52W Low',   `$${s.low_52w}`,       C.red,      ''],
         ['Volatility',`${s.volatility}%`,    C.gold,     'annualized'],
-        ['Sharpe',    `${s.sharpe}`,          s.sharpe>=1?C.green:s.sharpe>=0?C.gold:C.red, ''],
+        ['Sharpe',    `${s.sharpe}`,           s.sharpe>=1?C.green:s.sharpe>=0?C.gold:C.red,  'all volatility'],
+        ['Sortino',   `${s.sortino??'—'}`,    (s.sortino??0)>=1?C.green:(s.sortino??0)>=0?C.gold:C.red, 'downside only'],
         ['Max DD',    `${s.max_drawdown}%`,  C.red,      'from peak'],
         ['RSI (14)',  `${s.rsi??'N/A'}`,     rsiColor,   s.rsi>70?'Overbought':s.rsi<30?'Oversold':'Neutral'],
         ['ATR (14)',  `$${s.atr??'N/A'}`,    C.orange,   'avg true range'],
@@ -2842,13 +2843,40 @@ function runSignal(){
 }
 
 function renderSignal(d){
-    const cfg = {
-        BUY:  {bg:'rgba(0,212,170,0.07)',   dark:'#00D4AA', badge:'#061A14', icon:'▲', desc:'Composite analysis favours upside entry.'},
-        HOLD: {bg:'rgba(255,179,71,0.07)',  dark:'#FFB347', badge:'#1E1200', icon:'●', desc:'Mixed signals — insufficient conviction.'},
-        SELL: {bg:'rgba(255,61,107,0.07)',  dark:'#FF3D6B', badge:'#1E060C', icon:'▼', desc:'Composite analysis flags elevated downside risk.'},
-    }[d.signal];
-    const ms = d.master_score;
-    const strength = ms>=0.7?'Strong':ms>=0.35?'Moderate':ms>=0.15?'Mild':ms>-0.15?'Neutral':ms>-0.35?'Mild':ms>-0.7?'Moderate':'Strong';
+    const SIGNAL_CFG = {
+        VERY_BULLISH: {
+            label: 'Very Bullish',
+            bg:    'rgba(0,212,120,0.09)',   dark: '#00D478', badge: '#051A0E',
+            icon:  '▲▲',
+            desc:  'Composite indicators show strong positive momentum across multiple factors.',
+        },
+        BULLISH: {
+            label: 'Bullish',
+            bg:    'rgba(0,212,170,0.07)',   dark: '#00D4AA', badge: '#061A14',
+            icon:  '▲',
+            desc:  'Composite indicators lean positive — more factors align upward than downward.',
+        },
+        NEUTRAL: {
+            label: 'Neutral',
+            bg:    'rgba(255,179,71,0.07)',  dark: '#FFB347', badge: '#1E1200',
+            icon:  '●',
+            desc:  'Composite indicators show no clear directional bias — mixed or insufficient signals.',
+        },
+        BEARISH: {
+            label: 'Bearish',
+            bg:    'rgba(255,100,61,0.07)',  dark: '#FF7B54', badge: '#1E0C06',
+            icon:  '▼',
+            desc:  'Composite indicators lean negative — more factors align downward than upward.',
+        },
+        VERY_BEARISH: {
+            label: 'Very Bearish',
+            bg:    'rgba(255,51,72,0.09)',   dark: '#FF3348', badge: '#1E060C',
+            icon:  '▼▼',
+            desc:  'Composite indicators show strong negative momentum across multiple factors.',
+        },
+    };
+    const cfg = SIGNAL_CFG[d.signal] || SIGNAL_CFG.NEUTRAL;
+    const ms  = d.master_score;
 
     function scoreBar(label, score, color, hasData){
         const pct = Math.abs(score)*50;
@@ -2868,15 +2896,14 @@ function renderSignal(d){
         <div class="signal-banner__inner">
             <div class="signal-badge" style="background:${cfg.badge}; border: 1px solid ${cfg.dark}33;">
                 <div class="signal-badge__icon" style="color:${cfg.dark}">${cfg.icon}</div>
-                <div class="signal-badge__label" style="color:${cfg.dark}">${d.signal}</div>
+                <div class="signal-badge__label" style="color:${cfg.dark}">${cfg.label}</div>
             </div>
             <div>
-                <div class="signal-info__title" style="color:${cfg.dark}">${d.ticker} — Composite Signal Rating</div>
+                <div class="signal-info__title" style="color:${cfg.dark}">${d.ticker} — Composite Indicator Reading</div>
                 <div class="signal-info__desc" style="color:${cfg.dark}99">${cfg.desc}</div>
                 <div class="signal-meta">
                     <span style="color:${cfg.dark}CC">Master Score: <strong style="color:${cfg.dark}">${(ms>=0?'+':'')+ms.toFixed(3)}</strong></span>
                     <span style="color:${cfg.dark}CC">Confidence: <strong style="color:${cfg.dark}">${d.confidence}%</strong></span>
-                    <span style="color:${cfg.dark}CC">Strength: <strong style="color:${cfg.dark}">${strength}</strong></span>
                 </div>
             </div>
         </div>
@@ -3002,7 +3029,11 @@ function renderBacktest(d){
         <div class="stat-card"><div class="stat-card__label">Max Drawdown</div>
             <div class="stat-card__value" style="color:${C.red}">-${s.max_drawdown}%</div></div>
         <div class="stat-card"><div class="stat-card__label">Sharpe Ratio</div>
-            <div class="stat-card__value" style="color:${s.sharpe>=1?C.green:s.sharpe>=0?C.gold:C.red}">${s.sharpe}</div></div>
+            <div class="stat-card__value" style="color:${s.sharpe>=1?C.green:s.sharpe>=0?C.gold:C.red}">${s.sharpe}</div>
+            <div class="stat-card__sub">all volatility</div></div>
+        <div class="stat-card"><div class="stat-card__label">Sortino Ratio</div>
+            <div class="stat-card__value" style="color:${(s.sortino??0)>=1?C.green:(s.sortino??0)>=0?C.gold:C.red}">${s.sortino??'—'}</div>
+            <div class="stat-card__sub">downside only</div></div>
         <div class="stat-card"><div class="stat-card__label">Win Rate</div>
             <div class="stat-card__value" style="color:${s.win_rate>=50?C.green:C.red}">${s.win_rate}%</div></div>
         <div class="stat-card"><div class="stat-card__label">Round-Trip Trades</div>

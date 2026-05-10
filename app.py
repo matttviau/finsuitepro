@@ -2122,6 +2122,19 @@ def _sharpe_signal(df):
     sharpe = (ret.mean() / ret.std()) * math.sqrt(252)
     return _clip(sharpe / 3.0)
 
+def _sortino_signal(df):
+    """Like Sharpe but only penalises downside volatility."""
+    if df.empty or "Return" not in df.columns: return 0.0
+    ret = df["Return"].dropna()
+    if len(ret) < 20: return 0.0
+    mu = ret.mean()
+    downside = ret[ret < 0]
+    if len(downside) == 0: return 1.0          # no negative days → perfect
+    down_std = ((downside.pow(2).sum() / len(ret)) ** 0.5)
+    if down_std == 0: return 0.0
+    sortino = mu / down_std * math.sqrt(252)
+    return _clip(sortino / 3.0)
+
 def _price_trend_signal(df, window=60):
     if df.empty or len(df) < window: return 0.0
     close = df["Close"].dropna().tail(window).values
@@ -2209,9 +2222,10 @@ def run_signal_engine(ticker, tech_df, facts, news_df):
     tech_signals["vol_trend"] = _volume_trend_signal(df) * 0.10
     tech_score = _clip(sum(tech_signals.values()))
     risk_signals = {}
-    risk_signals["atr"] = _atr_risk_signal(df) * 0.35
-    risk_signals["drawdown"] = _max_drawdown_signal(df) * 0.35
-    risk_signals["sharpe"] = _sharpe_signal(df) * 0.30
+    risk_signals["atr"]      = _atr_risk_signal(df)   * 0.30
+    risk_signals["drawdown"] = _max_drawdown_signal(df)* 0.30
+    risk_signals["sharpe"]   = _sharpe_signal(df)      * 0.20
+    risk_signals["sortino"]  = _sortino_signal(df)     * 0.20
     risk_score = _clip(sum(risk_signals.values()))
     fund_score, fund_signals = _fundamental_score(facts)
     sent_score, sent_breakdown = _sentiment_score(news_df)
@@ -2229,9 +2243,11 @@ def run_signal_engine(ticker, tech_df, facts, news_df):
         ) / active_weight
         master_score = _clip(raw)
     confidence = min(100, int(sum(1 for v in {**tech_signals, **risk_signals, **fund_signals}.values() if v != 0) / 20 * 100))
-    if master_score >= 0.15: signal = "BUY"
-    elif master_score <= -0.15: signal = "SELL"
-    else: signal = "HOLD"
+    if   master_score >=  0.50: signal = "VERY_BULLISH"
+    elif master_score >=  0.15: signal = "BULLISH"
+    elif master_score >  -0.15: signal = "NEUTRAL"
+    elif master_score >  -0.50: signal = "BEARISH"
+    else:                        signal = "VERY_BEARISH"
     return {
         "signal": signal, "master_score": round(master_score, 4),
         "confidence": confidence,
@@ -2543,11 +2559,17 @@ def run_backtest(ticker: str, start_date: str, end_date: str,
     daily_rets = [(eq_vals[i] - eq_vals[i - 1]) / eq_vals[i - 1]
                   for i in range(1, len(eq_vals)) if eq_vals[i - 1] > 0]
     if len(daily_rets) > 1:
-        mu = sum(daily_rets) / len(daily_rets)
+        mu  = sum(daily_rets) / len(daily_rets)
         std = (sum((r - mu) ** 2 for r in daily_rets) / len(daily_rets)) ** 0.5
         sharpe = round(mu / std * (252 ** 0.5) if std > 0 else 0.0, 2)
+        # Sortino: downside deviation uses only negative returns in numerator
+        # but total N in denominator (standard Sortino formula)
+        neg_rets  = [r for r in daily_rets if r < 0]
+        down_std  = (sum(r ** 2 for r in neg_rets) / len(daily_rets)) ** 0.5 if neg_rets else 0.0
+        sortino   = round(mu / down_std * (252 ** 0.5) if down_std > 0 else 0.0, 2)
     else:
-        sharpe = 0.0
+        sharpe  = 0.0
+        sortino = 0.0
 
     return {
         'equity_curve': equity_curve,
@@ -2564,7 +2586,8 @@ def run_backtest(ticker: str, start_date: str, end_date: str,
             'max_drawdown': round(max_dd * 100, 2),
             'win_rate': win_rate,
             'num_trades': len(sell_trades),
-            'sharpe': sharpe,
+            'sharpe':  sharpe,
+            'sortino': sortino,
             'initial_capital': initial_capital,
             'final_equity': round(capital, 2),
         }
@@ -2813,6 +2836,8 @@ def api_technical(ticker):
             "low_52w":          round(close.rolling(min(252, n)).min().iloc[-1], 2),
             "volatility":       round(ret.std() * np.sqrt(252) * 100, 2) if len(ret) > 0 else 0,
             "sharpe":           round((ret.mean() / ret.std()) * np.sqrt(252), 3) if len(ret) > 20 and ret.std() > 0 else 0,
+            "sortino":          round((ret.mean() / ((ret[ret < 0].pow(2).sum() / len(ret)) ** 0.5)) * np.sqrt(252), 3)
+                                if len(ret) > 20 and len(ret[ret < 0]) > 0 and (ret[ret < 0].pow(2).sum() / len(ret)) > 0 else 0,
             "max_drawdown":     round(((close / close.cummax()) - 1).min() * 100, 2),
             "rsi":              round(df['RSI'].iloc[-1], 1) if pd.notna(df['RSI'].iloc[-1]) else None,
             "atr":              round(df['ATR'].iloc[-1], 2) if pd.notna(df['ATR'].iloc[-1]) else None,
