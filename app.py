@@ -2465,152 +2465,165 @@ def _compute_macro_composite_signal(df: pd.DataFrame) -> pd.Series:
     return (tech * 0.70 + pnf * 0.10 + macro * 0.20).clip(-1, 1)
 
 
-def _compute_pnf_vol_momentum_signal(df: pd.DataFrame,
-                                      box_pct: float = 0.01,
-                                      reversal: int = 3) -> tuple:
+def _compute_sentimomentum_signal(df: pd.DataFrame,
+                                   reversal: int = 5) -> tuple:
     """
-    Volume-Confirmed P&F Momentum Strategy — three isolated signal pillars.
+    Sentimomentum Strategy — four independent signal pillars, each normalised
+    to [−1, +1] before blending.
 
-    P&F (40%)
-        Classic percentage-box Point & Figure engine with ATR-adaptive box size.
-        Tracks column direction (X = up, O = down) and depth (boxes filled).
-        Pattern detection:
-          • Double-top  breakout  (X-col exceeds prior X-col high)  → +0.25 boost
-          • Triple-top  breakout  (exceeds two prior X-col highs)   → +0.40 boost
-          • Double-bottom breakdown (O-col below prior O-col low)   → −0.25 boost
-          • Triple-bottom breakdown                                 → −0.40 boost
-        Volume-at-reversal amplifier: when a column reversal occurs on above-
-        average volume, a decaying boost (linear over 5 bars, max +0.35) is
-        injected in the new column's direction.
+    ┌─────────────────────────────────────────────────────────────────────────┐
+    │ Pillar                  │ Weight │ Key insight                          │
+    ├─────────────────────────┼────────┼─────────────────────────────────────┤
+    │ P&F (ATR-adaptive, 5×) │  35 %  │ Structure + breakout patterns        │
+    │ OBV Volume              │  30 %  │ Volume flow confirms / leads price   │
+    │ Bollinger Band %B       │  20 %  │ Mean-reversion precision timing      │
+    │ Michigan Sentiment      │  15 %  │ Consumer confidence macro regime     │
+    └─────────────────────────────────────────────────────────────────────────┘
 
-    Volume (35%)
-        OBV 20-bar momentum × relative-volume weight.
-        Bullish OBV divergence (OBV rising while price falling) → muted +.
-        Bearish OBV divergence                                  → muted −.
-        High relative volume on the bar amplifies the OBV reading.
+    Parameter optimisation rationale
+    ---------------------------------
+    • 5-box reversal (vs 3): fewer but higher-quality column flips; eliminates
+      noise from intraday-style micro-reversals common with 1% ATR-level moves.
+    • ATR-adaptive box size (refreshed per reversal): self-tunes to each
+      stock's current volatility regime. Clamped [0.5 %, 2.5 %] to prevent
+      extreme values.  Warm-up = first valid 14-day ATR / price.
+    • Pillar weights 35/30/20/15: P&F provides directional structure; OBV is
+      historically the strongest standalone price/volume predictor; BB adds
+      entry precision; sentiment has lower weight because it is monthly and
+      slow-moving.
+    • BB signal = −(2 × %B − 1): linear from +1 at lower band (oversold) to
+      −1 at upper band (overbought).  Extends beyond ±1 when price pierces
+      the band (capped after clip).
+    • Sentiment weights 40 % level / 60 % momentum: momentum dominates because
+      the direction of sentiment change is more predictive of near-term price
+      action than the absolute reading.
 
-    Momentum (25%)
-        RSI normalised to [−1, +1] (60%) + 20-day Rate-of-Change capped at
-        ±50 % (40%).  Acts as a momentum filter — confirms or attenuates the
-        P&F & volume reading.
-
-    Returns (signal_series, metadata_dict).
+    Returns (signal_series, senti_meta_dict).
     """
     prices = df["Close"].values.astype(float)
     n      = len(prices)
 
     if n < 30:
-        empty = pd.Series(np.zeros(n), index=df.index)
-        return empty, {}
+        return pd.Series(np.zeros(n), index=df.index), {}
 
-    # ── Volume array & rolling 20-bar mean ───────────────────────────────────
+    # ── Shared: Volume array & 20-bar rolling mean ────────────────────────────
     volumes = df["Volume"].fillna(0).values.astype(float) \
               if "Volume" in df.columns else np.ones(n)
     vol_avg = np.empty(n)
     for i in range(n):
         lo = max(0, i - 19)
-        window = volumes[lo : i + 1]
-        vol_avg[i] = window.mean() if len(window) > 0 else 1.0
+        w  = volumes[lo : i + 1]
+        vol_avg[i] = w.mean() if len(w) > 0 else 1.0
 
-    # ── P&F Engine ────────────────────────────────────────────────────────────
-    col_dir     = 1           # +1 = X column, -1 = O column
+    # ── ATR array (for adaptive box size) ─────────────────────────────────────
+    atr_vals = df["ATR"].ffill().fillna(0).values.astype(float) \
+               if "ATR" in df.columns else np.zeros(n)
+
+    # Initial box_pct: first valid ATR / price, clamped [0.5 %, 2.5 %]
+    init_box = 0.01
+    for i in range(n):
+        if atr_vals[i] > 0 and prices[i] > 0:
+            init_box = float(np.clip(atr_vals[i] / prices[i], 0.005, 0.025))
+            break
+    cur_box_pct = init_box
+
+    # ── PILLAR 1: ATR-Adaptive P&F Engine (35 %) ──────────────────────────────
+    col_dir     = 1             # +1 = X-column, -1 = O-column
     last_lvl    = prices[0]
     col_boxes   = 1
-    cur_extreme = prices[0]   # column high (X) or low (O)
+    cur_extreme = prices[0]
+    col_archive: list = []      # [(direction, extreme_level), ...]
 
-    # Archive of completed columns: list of (direction, extreme_level)
-    col_archive: list = []
-
-    # Reversal boost state
-    last_rev_bar      = -100
+    last_rev_bar       = -100
     last_rev_vol_ratio = 1.0
 
-    pnf_raw = np.zeros(n, dtype=float)
+    pnf_raw      = np.zeros(n, dtype=float)
+    box_pct_log  = []           # track adaptive box sizes for metadata
 
-    # Metadata counters
-    n_reversals     = 0
-    n_dbl_top       = 0
-    n_tri_top       = 0
-    n_dbl_bot       = 0
-    n_tri_bot       = 0
-    col_depth_sum   = 0
+    # Counters
+    n_reversals   = 0
+    n_dbl_top     = 0
+    n_tri_top     = 0
+    n_dbl_bot     = 0
+    n_tri_bot     = 0
+    col_depth_sum = 0
 
     for i in range(n):
         p      = prices[i]
-        box_sz = max(abs(last_lvl) * box_pct, 1e-10)
+        box_sz = max(abs(last_lvl) * cur_box_pct, 1e-10)
         reversed_this_bar = False
 
-        if col_dir == 1:                                  # ── X column ────────
+        if col_dir == 1:                                    # ── X column ──────
             add = int((p - last_lvl) / box_sz)
             if add > 0:
-                col_boxes   += add
-                last_lvl    += add * box_sz
-                cur_extreme  = max(cur_extreme, last_lvl)
-            elif (last_lvl - p) >= reversal * box_sz:    # reversal → O
+                col_boxes  += add
+                last_lvl   += add * box_sz
+                cur_extreme = max(cur_extreme, last_lvl)
+            elif (last_lvl - p) >= reversal * box_sz:       # reversal → O
                 col_archive.append((1, cur_extreme))
                 col_depth_sum     += col_boxes
                 n_reversals       += 1
-                last_rev_vol_ratio = (volumes[i] / vol_avg[i]) \
+                # Refresh box size on reversal
+                if atr_vals[i] > 0 and prices[i] > 0:
+                    cur_box_pct = float(np.clip(atr_vals[i] / prices[i], 0.005, 0.025))
+                box_pct_log.append(cur_box_pct)
+                last_rev_vol_ratio = volumes[i] / vol_avg[i] \
                                      if vol_avg[i] > 0 else 1.0
                 last_rev_bar = i
                 col_dir      = -1
-                last_lvl    -= reversal * box_sz
+                last_lvl    -= reversal * cur_box_pct * last_lvl  # re-derive from refreshed box
+                last_lvl     = max(last_lvl, 1e-6)
                 col_boxes    = reversal
                 cur_extreme  = last_lvl
                 reversed_this_bar = True
-        else:                                             # ── O column ────────
+        else:                                               # ── O column ──────
             add = int((last_lvl - p) / box_sz)
             if add > 0:
-                col_boxes   += add
-                last_lvl    -= add * box_sz
-                cur_extreme  = min(cur_extreme, last_lvl)
-            elif (p - last_lvl) >= reversal * box_sz:    # reversal → X
+                col_boxes  += add
+                last_lvl   -= add * box_sz
+                cur_extreme = min(cur_extreme, last_lvl)
+            elif (p - last_lvl) >= reversal * box_sz:       # reversal → X
                 col_archive.append((-1, cur_extreme))
                 col_depth_sum     += col_boxes
                 n_reversals       += 1
-                last_rev_vol_ratio = (volumes[i] / vol_avg[i]) \
+                if atr_vals[i] > 0 and prices[i] > 0:
+                    cur_box_pct = float(np.clip(atr_vals[i] / prices[i], 0.005, 0.025))
+                box_pct_log.append(cur_box_pct)
+                last_rev_vol_ratio = volumes[i] / vol_avg[i] \
                                      if vol_avg[i] > 0 else 1.0
                 last_rev_bar = i
                 col_dir      = 1
-                last_lvl    += reversal * box_sz
+                last_lvl    += reversal * cur_box_pct * last_lvl
                 col_boxes    = reversal
                 cur_extreme  = last_lvl
                 reversed_this_bar = True
 
-        # ── Base P&F score (direction × capped depth) ────────────────────────
-        base = col_dir * min(1.0, 0.25 + col_boxes * 0.06)
+        # Base score: direction × depth-scaled magnitude
+        base = col_dir * min(1.0, 0.20 + col_boxes * 0.05)
 
-        # ── Double / triple top breakout & bottom breakdown ───────────────────
+        # Double / triple top breakout and double / triple bottom breakdown
         pattern   = 0.0
         same_cols = [c for c in col_archive if c[0] == col_dir]
-        if col_dir == 1 and same_cols:                   # X column patterns
+        if col_dir == 1 and same_cols:
             prior_highs = sorted([c[1] for c in same_cols], reverse=True)
             if prior_highs and cur_extreme > prior_highs[0]:
                 if len(prior_highs) >= 2 and cur_extreme > prior_highs[1]:
-                    pattern = 0.40
-                    if not reversed_this_bar:
-                        n_tri_top += 1 if i == last_rev_bar + 1 else 0
+                    pattern = 0.40;  n_tri_top += 1 if reversed_this_bar else 0
                 else:
-                    pattern = 0.25
-                    if not reversed_this_bar:
-                        n_dbl_top += 1 if i == last_rev_bar + 1 else 0
-        elif col_dir == -1 and same_cols:                # O column patterns
+                    pattern = 0.25;  n_dbl_top += 1 if reversed_this_bar else 0
+        elif col_dir == -1 and same_cols:
             prior_lows = sorted([c[1] for c in same_cols])
             if prior_lows and cur_extreme < prior_lows[0]:
                 if len(prior_lows) >= 2 and cur_extreme < prior_lows[1]:
-                    pattern = -0.40
-                    if not reversed_this_bar:
-                        n_tri_bot += 1 if i == last_rev_bar + 1 else 0
+                    pattern = -0.40; n_tri_bot += 1 if reversed_this_bar else 0
                 else:
-                    pattern = -0.25
-                    if not reversed_this_bar:
-                        n_dbl_bot += 1 if i == last_rev_bar + 1 else 0
+                    pattern = -0.25; n_dbl_bot += 1 if reversed_this_bar else 0
 
-        # ── Volume-at-reversal boost (decays linearly over 5 bars) ───────────
+        # High-volume reversal boost: decays linearly over 5 bars
         bars_since = i - last_rev_bar
         if bars_since <= 5 and last_rev_vol_ratio > 1.2:
-            boost = (last_rev_vol_ratio - 1.0) * (1.0 - bars_since / 6.0) * 0.35
-            boost = col_dir * min(0.35, boost)
+            burst = (last_rev_vol_ratio - 1.0) * (1.0 - bars_since / 6.0) * 0.30
+            boost = col_dir * min(0.30, burst)
         else:
             boost = 0.0
 
@@ -2618,7 +2631,9 @@ def _compute_pnf_vol_momentum_signal(df: pd.DataFrame,
 
     pnf_s = pd.Series(pnf_raw, index=df.index)
 
-    # ── Volume Signal ─────────────────────────────────────────────────────────
+    # ── PILLAR 2: OBV Volume Confirmation (30 %) ──────────────────────────────
+    # OBV 20-bar trend vs price direction; result scaled by relative volume.
+    # Identical to the prior Vol-P&F strategy so historical benchmark is fair.
     vol_s = pd.Series(np.zeros(n), index=df.index)
     if "OBV" in df.columns:
         obv = df["OBV"].ffill().fillna(0).values.astype(float)
@@ -2628,30 +2643,81 @@ def _compute_pnf_vol_momentum_signal(df: pd.DataFrame,
             rel_v   = min(2.0, volumes[i] / vol_avg[i]) if vol_avg[i] > 0 else 1.0
             if   obv_d > 0 and price_d > 0: strength =  0.80
             elif obv_d < 0 and price_d < 0: strength = -0.80
-            elif obv_d > 0 and price_d < 0: strength =  0.35   # bull divergence
-            else:                            strength = -0.35   # bear divergence
-            vol_s.iloc[i] = float(np.clip(strength * (0.5 + 0.5 * min(rel_v, 1.5) / 1.5), -1.0, 1.0))
+            elif obv_d > 0 and price_d < 0: strength =  0.35   # bullish divergence
+            else:                            strength = -0.35   # bearish divergence
+            vol_s.iloc[i] = float(np.clip(strength * (0.5 + 0.5 * min(rel_v, 1.5) / 1.5),
+                                          -1.0, 1.0))
 
-    # ── Momentum Signal ───────────────────────────────────────────────────────
-    rsi_s = pd.Series(np.zeros(n), index=df.index)
-    if "RSI" in df.columns:
-        rsi_s = df["RSI"].apply(_normalise_rsi).fillna(0)
-    roc20 = df["Close"].pct_change(20).clip(-0.50, 0.50) * 2.0
-    mom_s = (rsi_s * 0.60 + roc20.fillna(0) * 0.40).clip(-1.0, 1.0)
+    # ── PILLAR 3: Bollinger Band %B (20 %) ────────────────────────────────────
+    # %B = (Close − lower) / (upper − lower).
+    # Signal = −(2 × %B − 1): +1.0 when price is at/below lower band (oversold),
+    # −1.0 when at/above upper band (overbought).  Extends beyond ±1 when price
+    # pierces the band; clipped after.
+    bb_s = pd.Series(np.zeros(n), index=df.index)
+    if "BB_upper" in df.columns and "BB_lower" in df.columns:
+        spread = (df["BB_upper"] - df["BB_lower"]).replace(0, np.nan)
+        pct_b  = (df["Close"] - df["BB_lower"]) / spread
+        raw_bb = -(2.0 * pct_b - 1.0)          # +1 at lower band, -1 at upper
+        bb_s   = raw_bb.clip(-1.0, 1.0).fillna(0.0)
+        # Squeeze modifier: when bands are narrow (< 70 % of 50-bar median width),
+        # pending breakout → tilt BB signal toward P&F column direction.
+        if "BB_width" in df.columns:
+            med_w  = df["BB_width"].rolling(50, min_periods=20).median()
+            is_sq  = (df["BB_width"] < med_w * 0.70).fillna(False)
+            # In squeeze, replace %B with a mild P&F-direction lean
+            squeeze_lean = pnf_s.clip(-0.30, 0.30)
+            bb_s = bb_s.where(~is_sq, squeeze_lean)
 
-    # ── Combine ───────────────────────────────────────────────────────────────
-    combined = (pnf_s * 0.40 + vol_s * 0.35 + mom_s * 0.25).clip(-1.0, 1.0)
+    # Metadata: count over/under-band bars
+    bb_oversold_n    = int((bb_s >= 0.70).sum())   # price near/below lower band
+    bb_overbought_n  = int((bb_s <= -0.70).sum())  # price near/above upper band
 
-    avg_depth = round(col_depth_sum / max(n_reversals, 1), 1)
-    meta = {
+    # ── PILLAR 4: Michigan Consumer Sentiment / UMCSENT (15 %) ───────────────
+    # Monthly FRED series forward-filled to daily trading dates.
+    # Historical neutral level ≈ 85 (long-run mean 1978-present).
+    #
+    # Level component (40 %): (value − 85) / 25 clipped to [−1, +1].
+    #   Gives ±1.0 at 110 / 60 respectively.
+    #
+    # Momentum component (60 %): 3-month ROC on the forward-filled daily
+    #   series (≈ 63 trading days).  clip(roc × 8, −1, +1) so a +12.5 % three-
+    #   month rise in sentiment yields +1.0.  Weighted higher than level because
+    #   the *direction* of sentiment change leads price more reliably than the
+    #   absolute reading.
+    senti_s     = pd.Series(np.zeros(n), index=df.index)
+    umcsent_end = None
+    try:
+        umcs = _fetch_fred_series_for_macro("UMCSENT")
+        if not umcs.empty:
+            umcs_aln = umcs.reindex(df.index, method='ffill').fillna(85.0)
+            lvl_sig  = ((umcs_aln - 85.0) / 25.0).clip(-1.0, 1.0)
+            mom_sig  = umcs_aln.pct_change(63).fillna(0).mul(8).clip(-1.0, 1.0)
+            senti_s  = (lvl_sig * 0.40 + mom_sig * 0.60).clip(-1.0, 1.0)
+            umcsent_end = round(float(umcs_aln.iloc[-1]), 1)
+    except Exception:
+        pass   # sentiment pillar contributes zero if FRED is unavailable
+
+    # ── Combine all four pillars ──────────────────────────────────────────────
+    combined = (pnf_s   * 0.35 +
+                vol_s   * 0.30 +
+                bb_s    * 0.20 +
+                senti_s * 0.15).clip(-1.0, 1.0)
+
+    avg_depth   = round(col_depth_sum / max(n_reversals, 1), 1)
+    avg_box_pct = round(float(np.mean(box_pct_log)) * 100, 2) if box_pct_log else round(init_box * 100, 2)
+    senti_meta = {
         "pnf_reversals":  n_reversals,
         "dbl_top_breaks": n_dbl_top,
         "tri_top_breaks": n_tri_top,
         "dbl_bot_breaks": n_dbl_bot,
         "tri_bot_breaks": n_tri_bot,
         "avg_col_depth":  avg_depth,
+        "avg_box_pct":    avg_box_pct,        # ATR-adaptive box size, in %
+        "bb_oversold":    bb_oversold_n,
+        "bb_overbought":  bb_overbought_n,
+        "umcsent_end":    umcsent_end,         # sentinel value at period end
     }
-    return combined, meta
+    return combined, senti_meta
 
 
 def run_backtest(ticker: str, start_date: str, end_date: str,
@@ -2663,15 +2729,15 @@ def run_backtest(ticker: str, start_date: str, end_date: str,
     raw = fetch_ohlc(ticker, days=0)
     df = compute_indicators(raw)
 
-    pnf_meta = {}
+    senti_meta = {}
     if strategy == 'sma_crossover':
         signal_series = _compute_sma_crossover_signal(df)
     elif strategy == 'momentum':
         signal_series = _compute_momentum_signal(df)
     elif strategy == 'macro_composite':
         signal_series = _compute_macro_composite_signal(df)
-    elif strategy == 'vol_pnf_momentum':
-        signal_series, pnf_meta = _compute_pnf_vol_momentum_signal(df)
+    elif strategy == 'sentimomentum':
+        signal_series, senti_meta = _compute_sentimomentum_signal(df)
     else:  # 'combined'
         signal_series = _compute_signal_series(df)
 
@@ -2784,8 +2850,8 @@ def run_backtest(ticker: str, start_date: str, end_date: str,
             'final_equity': round(capital, 2),
         }
     }
-    if pnf_meta:
-        result['pnf_meta'] = pnf_meta
+    if senti_meta:
+        result['senti_meta'] = senti_meta
     return result
 
 
@@ -3613,7 +3679,7 @@ def api_backtest(ticker):
         lookback_days = request.args.get('lookback', 120, type=int)
         strategy = request.args.get('strategy', 'combined')
         if strategy not in ('combined', 'sma_crossover', 'momentum',
-                            'macro_composite', 'vol_pnf_momentum'):
+                            'macro_composite', 'sentimomentum'):
             strategy = 'combined'
         result = run_backtest(ticker.upper(), start_date, end_date,
                               initial_capital, buy_thresh, sell_thresh, lookback_days, strategy)

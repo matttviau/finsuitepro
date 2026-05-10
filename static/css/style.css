@@ -3376,24 +3376,28 @@ button.econ-view-btn {
 .bt-strategy-card__badge--green {
     background: var(--green);
 }
+.bt-strategy-card__badge--senti {
+    background: linear-gradient(90deg, var(--purple), var(--cyan));
+    color: #fff;
+}
 
-/* ── Vol · P&F · Momentum card ──────────────────────────────────────────── */
-.bt-strategy-card--vol {
-    border-color: rgba(0, 212, 120, 0.28);
-    background: linear-gradient(135deg, var(--card) 0%, rgba(0, 212, 120, 0.04) 100%);
+/* ── Sentimomentum card ──────────────────────────────────────────────────── */
+.bt-strategy-card--senti {
+    border-color: rgba(139, 92, 246, 0.28);
+    background: linear-gradient(135deg, var(--card) 0%, rgba(139, 92, 246, 0.05) 100%);
     position: relative;
 }
-.bt-strategy-card--vol:hover {
-    border-color: rgba(0, 212, 120, 0.45);
+.bt-strategy-card--senti:hover {
+    border-color: rgba(139, 92, 246, 0.50);
 }
-.bt-strategy-card--vol.active {
-    border-color: var(--green);
-    border-top-color: var(--green);
-    background: rgba(0, 212, 120, 0.06);
-    box-shadow: 0 0 0 2px rgba(0, 212, 120, 0.16), 0 4px 16px rgba(0, 212, 120, 0.10);
+.bt-strategy-card--senti.active {
+    border-color: var(--purple);
+    border-top-color: var(--purple);
+    background: rgba(139, 92, 246, 0.07);
+    box-shadow: 0 0 0 2px rgba(139, 92, 246, 0.18), 0 4px 16px rgba(139, 92, 246, 0.12);
 }
-.bt-strategy-card--vol .bt-strategy-card__icon {
-    background: linear-gradient(135deg, var(--green), var(--cyan));
+.bt-strategy-card--senti .bt-strategy-card__icon {
+    background: linear-gradient(135deg, var(--purple), var(--cyan));
     -webkit-background-clip: text; background-clip: text;
     -webkit-text-fill-color: transparent;
 }
