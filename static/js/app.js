@@ -2113,47 +2113,553 @@ function _renderStatement(d) {
 }
 
 /* ═══════════════════════════════════════════════════════════════════════════
-   CORRELATION
+   CORRELATION — Matrix · Scatter/OLS Regression · Multivariate Analysis
    ═══════════════════════════════════════════════════════════════════════════ */
+
+let _corrData      = null;   // full API response
+let _corrChart     = null;   // active Chart.js scatter instance
+let _corrActivePair = null;  // currently selected pair key
+
+/* ── Entry point ──────────────────────────────────────────────────────── */
 function runCorr(){
     const raw = document.getElementById('corr-tickers').value;
     const tickers = raw.split(',').map(t=>t.trim().toUpperCase()).filter(Boolean);
-    if(tickers.length<2) return alert('Enter at least 2 tickers');
-    document.getElementById('corr-loading').style.display='flex';
-    document.getElementById('corr-content').style.display='none';
-    fetch('/api/correlation',{
-        method:'POST', headers:{'Content-Type':'application/json'},
-        body:JSON.stringify({tickers,period:corrPeriod})
-    }).then(r=>r.json()).then(d=>{
-        document.getElementById('corr-loading').style.display='none';
+    if(tickers.length < 2) return alert('Enter at least 2 tickers');
+    document.getElementById('corr-loading').style.display = 'flex';
+    document.getElementById('corr-content').style.display = 'none';
+    fetch('/api/correlation', {
+        method: 'POST', headers: {'Content-Type':'application/json'},
+        body: JSON.stringify({tickers, period: corrPeriod})
+    })
+    .then(r => r.json())
+    .then(d => {
+        document.getElementById('corr-loading').style.display = 'none';
         if(d.error) return alert(d.error);
-        document.getElementById('corr-content').style.display='block';
-        renderHeatmap(d);
-        _saveState('corr', { tickers: raw, period: corrPeriod });
-    }).catch(e=>{document.getElementById('corr-loading').style.display='none';alert(e);});
+        _corrData = d;
+        document.getElementById('corr-content').style.display = 'block';
+        _corrBuildTabMeta(d);
+        corrSwitchTab('matrix');   // start on matrix
+        _populatePairSelect(d);
+        _populateDepSelect(d);
+        _saveState('corr', {tickers: raw, period: corrPeriod});
+    })
+    .catch(e => {
+        document.getElementById('corr-loading').style.display = 'none';
+        alert(e);
+    });
 }
 
+/* ── Tab switching ────────────────────────────────────────────────────── */
+function corrSwitchTab(tab){
+    ['matrix','scatter','multi'].forEach(t => {
+        document.getElementById(`corr-tab-${t}`).classList.toggle('active', t===tab);
+        document.getElementById(`corr-panel-${t}`).style.display = t===tab ? '' : 'none';
+    });
+    if(!_corrData) return;
+    if(tab==='matrix')  { renderHeatmap(_corrData); _renderDescStats(_corrData); }
+    if(tab==='scatter') { corrRenderActivePair(); }
+    if(tab==='multi')   { corrRenderMultivariate(); _renderMultiTable(_corrData); }
+}
+
+/* ── Tab meta badge ───────────────────────────────────────────────────── */
+function _corrBuildTabMeta(d){
+    const meta = document.getElementById('corr-tab-meta');
+    if(!meta) return;
+    const pairs = Object.keys(d.regression||{}).length;
+    meta.innerHTML =
+        `<span class="corr-meta-badge">${d.tickers.length} tickers</span>` +
+        `<span class="corr-meta-badge">${pairs} pairs</span>` +
+        `<span class="corr-meta-badge">${d.n_obs} obs</span>` +
+        `<span class="corr-meta-badge">${d.period}</span>`;
+}
+
+/* ══════════════════════════════════════════════════════════════════════
+   TAB 1 — CORRELATION MATRIX
+   ══════════════════════════════════════════════════════════════════════ */
 function renderHeatmap(d){
+    _renderCorrStatChips(d);
     const n = d.tickers.length;
-    let html = '<table class="heatmap-table"><tr><th></th>';
-    d.tickers.forEach(t=>html+=`<th>${t}</th>`);
-    html += '</tr>';
-    for(let i=0;i<n;i++){
+    let html = '<table class="heatmap-table"><thead><tr><th></th>';
+    d.tickers.forEach(t => html += `<th title="${t}">${t}</th>`);
+    html += '</tr></thead><tbody>';
+    for(let i=0; i<n; i++){
         html += `<tr><th>${d.tickers[i]}</th>`;
-        for(let j=0;j<n;j++){
-            const v = d.matrix[i][j];
-            const pct = Math.abs(v);
-            let r,g,b;
-            if(v>=0){ r=Math.round(220-v*180); g=Math.round(240-v*60); b=Math.round(220-v*180); }
-            else{ r=Math.round(240+v*20); g=Math.round(220+v*180); b=Math.round(220+v*180); }
-            const tc = pct>0.5?'white':'#1A1D23';
-            const bg = v>=0 ? `rgba(22,163,74,${pct*0.7})` : `rgba(220,38,38,${pct*0.7})`;
-            html += `<td style="background:${bg};color:${tc}">${v.toFixed(2)}</td>`;
+        for(let j=0; j<n; j++){
+            const v   = d.matrix[i][j];
+            const abs = Math.abs(v);
+            const isDiag = i===j;
+            const bg  = isDiag
+                ? 'rgba(255,255,255,0.04)'
+                : v>=0 ? `rgba(22,163,74,${abs*0.75})` : `rgba(220,38,38,${abs*0.75})`;
+            const tc  = isDiag ? 'var(--text-dim)' : (abs>0.45 ? 'white' : 'var(--text-sec)');
+            const cls = isDiag ? 'heatmap-cell-diag' : '';
+            // On-click → jump to scatter for this pair
+            const onclick = !isDiag
+                ? `onclick="corrJumpToPair('${d.tickers[i]}','${d.tickers[j]}')" style="cursor:pointer"`
+                : '';
+            const title = !isDiag
+                ? `title="${d.tickers[i]} vs ${d.tickers[j]}: ${v.toFixed(4)}"`
+                : `title="${d.tickers[i]}: diagonal"`;
+            html += `<td class="${cls}" style="background:${bg};color:${tc}" ${onclick} ${title}>${v.toFixed(3)}</td>`;
         }
         html += '</tr>';
     }
-    html += '</table>';
+    html += '</tbody></table>';
     document.getElementById('corr-table').innerHTML = html;
+}
+
+/* Stat chips above the matrix */
+function _renderCorrStatChips(d){
+    const row = document.getElementById('corr-stat-row');
+    if(!row) return;
+    // Average pairwise correlation (off-diagonal)
+    const n = d.tickers.length;
+    let sumCor=0, cntCor=0, maxAbs=0, maxPair='', minAbs=1, minPair='';
+    for(let i=0;i<n;i++) for(let j=0;j<n;j++){
+        if(i===j) continue;
+        const v = d.matrix[i][j];
+        sumCor += v; cntCor++;
+        if(Math.abs(v)>maxAbs){ maxAbs=Math.abs(v); maxPair=`${d.tickers[i]}/${d.tickers[j]}`; }
+        if(Math.abs(v)<minAbs){ minAbs=Math.abs(v); minPair=`${d.tickers[i]}/${d.tickers[j]}`; }
+    }
+    const avgCor = cntCor ? sumCor/cntCor : 0;
+    // Best R² from pairwise regressions
+    const regVals = Object.values(d.regression||{});
+    const bestR2  = regVals.length ? Math.max(...regVals.map(r=>r.r2)) : 0;
+    const chips = [
+        {val: avgCor.toFixed(3),  lbl:'Avg Corr',    cls: avgCor>0.3?'--orange':avgCor<0?'--red':'--green'},
+        {val: maxAbs.toFixed(3),  lbl:`Max |r| ${maxPair}`, cls:'--orange'},
+        {val: minAbs.toFixed(3),  lbl:`Min |r| ${minPair}`, cls:'--cyan'},
+        {val: `${(bestR2*100).toFixed(1)}%`, lbl:'Best R²',  cls: bestR2>0.5?'--green':bestR2>0.2?'--orange':'--red'},
+        {val: d.n_obs,            lbl:'Observations', cls:''},
+    ];
+    row.innerHTML = chips.map(c=>
+        `<div class="corr-stat-chip corr-stat-chip${c.cls}">
+           <span class="corr-stat-chip__val">${c.val}</span>
+           <span class="corr-stat-chip__lbl">${c.lbl}</span>
+         </div>`
+    ).join('');
+}
+
+/* Descriptive stats table */
+function _renderDescStats(d){
+    const el = document.getElementById('corr-ticker-stats');
+    if(!el) return;
+    const stats = d.ticker_stats||{};
+    let html = `<table class="corr-desc-table">
+        <thead><tr>
+            <th>Ticker</th>
+            <th>Ann. Return</th>
+            <th>Ann. Vol</th>
+            <th>Sharpe</th>
+            <th>Skew</th>
+            <th>Kurtosis</th>
+            <th>Max DD</th>
+        </tr></thead><tbody>`;
+    d.tickers.forEach(t => {
+        const s = stats[t]||{};
+        const ret = s.ann_return??0, vol = s.volatility??0, sh = s.sharpe??0;
+        const sk = s.skew??0, ku = s.kurtosis??0, dd = s.max_drawdown??0;
+        const retCls = ret>=0 ? 'color:var(--green)' : 'color:var(--red)';
+        const shCls  = sh>1 ? 'color:var(--green)' : sh>0 ? 'color:var(--orange)' : 'color:var(--red)';
+        html += `<tr>
+            <td>${t}</td>
+            <td style="${retCls}">${ret>=0?'+':''}${ret.toFixed(2)}%</td>
+            <td>${vol.toFixed(2)}%</td>
+            <td style="${shCls}">${sh.toFixed(3)}</td>
+            <td style="${sk<-0.5||sk>0.5?'color:var(--orange)':''}">${sk.toFixed(3)}</td>
+            <td>${ku.toFixed(3)}</td>
+            <td style="color:var(--red)">${dd.toFixed(2)}%</td>
+        </tr>`;
+    });
+    html += '</tbody></table>';
+    el.innerHTML = html;
+}
+
+/* ══════════════════════════════════════════════════════════════════════
+   TAB 2 — SCATTER & OLS REGRESSION
+   ══════════════════════════════════════════════════════════════════════ */
+
+function _populatePairSelect(d){
+    const sel = document.getElementById('corr-pair-select');
+    if(!sel) return;
+    sel.innerHTML = '';
+    Object.keys(d.regression||{}).forEach(key => {
+        const r = d.regression[key];
+        const opt = document.createElement('option');
+        opt.value = key;
+        opt.textContent = `${r.x_ticker} vs ${r.y_ticker}  (r = ${r.r>=0?'+':''}${r.r.toFixed(3)})`;
+        sel.appendChild(opt);
+    });
+    if(sel.options.length) _corrActivePair = sel.options[0].value;
+}
+
+function corrJumpToPair(t1, t2){
+    const key1 = `${t1}_vs_${t2}`, key2 = `${t2}_vs_${t1}`;
+    const useKey = (_corrData&&_corrData.regression[key1]) ? key1 : key2;
+    const sel = document.getElementById('corr-pair-select');
+    if(sel){
+        for(let i=0;i<sel.options.length;i++){
+            if(sel.options[i].value===useKey){ sel.selectedIndex=i; break; }
+        }
+    }
+    _corrActivePair = useKey;
+    corrSwitchTab('scatter');
+}
+
+function corrRenderActivePair(){
+    const sel = document.getElementById('corr-pair-select');
+    if(sel && sel.value) _corrActivePair = sel.value;
+    if(!_corrData || !_corrActivePair) return;
+    const reg = (_corrData.regression||{})[_corrActivePair];
+    if(!reg) return;
+    _drawScatterChart(reg, _corrData.returns_data);
+    _renderRegStats(reg);
+    _renderPairsSummaryTable(_corrData, _corrActivePair);
+}
+
+function _drawScatterChart(reg, returnsData){
+    const xt = reg.x_ticker, yt = reg.y_ticker;
+    const xs = returnsData[xt]||[], ys = returnsData[yt]||[];
+    const pts = xs.map((x,i)=>({x:x*100, y:(ys[i]||0)*100}));
+
+    // Regression line endpoints
+    const xMin = Math.min(...xs)*100, xMax = Math.max(...xs)*100;
+    const slope = reg.slope, ic = reg.intercept;
+    const lineData = [
+        {x: xMin, y: (slope*xMin/100 + ic)*100},
+        {x: xMax, y: (slope*xMax/100 + ic)*100},
+    ];
+
+    // Title
+    const titleEl = document.getElementById('corr-scatter-title');
+    if(titleEl) titleEl.textContent = `${xt} vs ${yt} — Scatter Plot`;
+
+    // Destroy previous chart
+    if(_corrChart){ _corrChart.destroy(); _corrChart=null; }
+    const canvas = document.getElementById('corr-scatter-canvas');
+    if(!canvas) return;
+    const ctx = canvas.getContext('2d');
+
+    // Colour based on correlation sign
+    const dotColor = reg.r >= 0
+        ? 'rgba(34,197,94,0.55)'
+        : 'rgba(239,68,68,0.55)';
+    const lineColor = reg.r >= 0
+        ? 'rgba(34,197,94,0.9)'
+        : 'rgba(239,68,68,0.9)';
+
+    _corrChart = new Chart(ctx, {
+        data: {
+            datasets: [
+                {
+                    type: 'scatter',
+                    label: `Daily Returns`,
+                    data: pts,
+                    pointRadius: 3,
+                    pointHoverRadius: 5,
+                    backgroundColor: dotColor,
+                    borderColor: 'transparent',
+                    order: 2,
+                },
+                {
+                    type: 'line',
+                    label: `OLS Regression`,
+                    data: lineData,
+                    borderColor: lineColor,
+                    borderWidth: 2,
+                    pointRadius: 0,
+                    fill: false,
+                    tension: 0,
+                    order: 1,
+                }
+            ]
+        },
+        options: {
+            responsive: true,
+            maintainAspectRatio: false,
+            animation: {duration: 400},
+            plugins: {
+                legend: {
+                    display: true,
+                    position: 'top',
+                    labels: {color:'#94A3B8', font:{size:11}, boxWidth:14, padding:16}
+                },
+                tooltip: {
+                    callbacks: {
+                        label: ctx => {
+                            if(ctx.datasetIndex===1) return null;
+                            return `${xt}: ${ctx.parsed.x.toFixed(3)}%  ${yt}: ${ctx.parsed.y.toFixed(3)}%`;
+                        }
+                    },
+                    backgroundColor: '#1E2330', borderColor: '#374151', borderWidth: 1,
+                    titleColor: '#F8FAFC', bodyColor: '#94A3B8', padding: 10,
+                }
+            },
+            scales: {
+                x: {
+                    title: {display:true, text:`${xt} Daily Return (%)`, color:'#64748B', font:{size:11}},
+                    grid: {color:'rgba(255,255,255,0.05)'},
+                    ticks: {color:'#64748B', font:{size:10},
+                        callback: v => v.toFixed(1)+'%'}
+                },
+                y: {
+                    title: {display:true, text:`${yt} Daily Return (%)`, color:'#64748B', font:{size:11}},
+                    grid: {color:'rgba(255,255,255,0.05)'},
+                    ticks: {color:'#64748B', font:{size:10},
+                        callback: v => v.toFixed(1)+'%'}
+                }
+            }
+        }
+    });
+
+    // Regression equation strip
+    _renderRegEquation(reg);
+}
+
+function _renderRegEquation(reg){
+    const el = document.getElementById('corr-reg-eq');
+    if(!el) return;
+    const sl  = reg.slope, ic  = reg.intercept;
+    const r2  = reg.r2,    rv  = reg.r;
+    const pv  = reg.p_value;
+    const slCls = sl>=0?'--pos':'--neg';
+    const icCls = ic>=0?'--pos':'--neg';
+    const r2Cls = r2>=0.5?'--pos': r2>=0.2?'--neutral':'--neg';
+    const sig   = pv < 0.05;
+    el.innerHTML = `
+        <div class="corr-reg-eq-part">
+            <span class="corr-reg-eq-lbl">Equation</span>
+            <span class="corr-reg-eq-val">
+                Y = <span class="corr-reg-eq-val${slCls}">${sl>=0?'+':''}${sl.toFixed(4)}</span> × X
+                    <span class="corr-reg-eq-val${icCls}">${ic>=0?'+':''}${ic.toFixed(6)}</span>
+            </span>
+        </div>
+        <div class="corr-reg-eq-part">
+            <span class="corr-reg-eq-lbl">R²</span>
+            <span class="corr-reg-eq-val corr-reg-eq-val${r2Cls}">${(r2*100).toFixed(2)}%</span>
+        </div>
+        <div class="corr-reg-eq-part">
+            <span class="corr-reg-eq-lbl">Pearson r</span>
+            <span class="corr-reg-eq-val">${rv>=0?'+':''}${rv.toFixed(4)}</span>
+        </div>
+        <div class="corr-reg-eq-part">
+            <span class="corr-reg-eq-lbl">p-value</span>
+            <span class="corr-reg-eq-val" style="color:${sig?'var(--green)':'var(--text-dim)'}">
+                ${pv<0.0001?'< 0.0001':pv.toFixed(4)} ${sig?'★':''}
+            </span>
+        </div>`;
+}
+
+function _renderRegStats(reg){
+    const el = document.getElementById('corr-reg-stats-grid');
+    if(!el) return;
+    const r2  = reg.r2;
+    const sig = reg.p_value < 0.05;
+    const r2Class  = r2>=0.5?'--high': r2>=0.2?'--med':'--low';
+    const sigClass = sig ? '--sig':'--insig';
+    const stats = [
+        {k:'R²',         v:`${(r2*100).toFixed(2)}%`, c: r2Class},
+        {k:'Pearson r',  v:`${reg.r>=0?'+':''}${reg.r.toFixed(4)}`,   c:''},
+        {k:'Slope (β)',  v:`${reg.slope>=0?'+':''}${reg.slope.toFixed(4)}`, c: reg.slope>=0?'--high':'--low'},
+        {k:'Intercept (α)', v: reg.intercept.toFixed(6), c:''},
+        {k:'Std Error',  v: reg.std_err.toFixed(6),  c:''},
+        {k:'p-value',    v: reg.p_value<0.0001?'< 0.0001':reg.p_value.toFixed(4), c: sigClass},
+    ];
+    el.innerHTML = stats.map(s=>
+        `<div class="corr-stat-kv">
+           <span class="corr-stat-kv__key">${s.k}</span>
+           <span class="corr-stat-kv__val corr-stat-kv__val${s.c}">${s.v}</span>
+         </div>`
+    ).join('');
+}
+
+function _renderPairsSummaryTable(d, activePair){
+    const el = document.getElementById('corr-pairs-summary-table');
+    if(!el) return;
+    const regs = Object.entries(d.regression||{});
+    // Sort by |r| desc
+    regs.sort((a,b) => Math.abs(b[1].r) - Math.abs(a[1].r));
+    let html = `<table class="corr-pairs-tbl">
+        <thead><tr>
+            <th>Pair</th>
+            <th>r</th>
+            <th>R²</th>
+            <th>β</th>
+            <th>p</th>
+        </tr></thead><tbody>`;
+    regs.forEach(([key, r]) => {
+        const isActive = key===activePair;
+        const rCls  = r.r>=0.5?'color:var(--green)':r.r<=-0.5?'color:var(--red)':'color:var(--orange)';
+        const r2Pct = (r.r2*100).toFixed(1)+'%';
+        const sig   = r.p_value<0.05 ? '★' : '';
+        html += `<tr class="${isActive?'active':''}"
+                    onclick="corrJumpToPair('${r.x_ticker}','${r.y_ticker}')"
+                    style="cursor:pointer">
+            <td>${r.x_ticker}/${r.y_ticker}</td>
+            <td style="${rCls}">${r.r>=0?'+':''}${r.r.toFixed(3)}</td>
+            <td>${r2Pct}</td>
+            <td>${r.slope>=0?'+':''}${r.slope.toFixed(4)}</td>
+            <td style="${sig?'color:var(--green)':'color:var(--text-dim)'}">${sig||r.p_value.toFixed(3)}</td>
+        </tr>`;
+    });
+    html += '</tbody></table>';
+    el.innerHTML = html;
+}
+
+/* ══════════════════════════════════════════════════════════════════════
+   TAB 3 — MULTIVARIATE OLS
+   ══════════════════════════════════════════════════════════════════════ */
+
+function _populateDepSelect(d){
+    const sel = document.getElementById('corr-dep-select');
+    if(!sel) return;
+    sel.innerHTML = '';
+    d.tickers.forEach(t => {
+        const opt = document.createElement('option');
+        opt.value = t; opt.textContent = t;
+        sel.appendChild(opt);
+    });
+}
+
+function corrRenderMultivariate(){
+    const sel = document.getElementById('corr-dep-select');
+    if(!_corrData || !sel) return;
+    const dep = sel.value;
+    const mv  = (_corrData.multivariate||{})[dep];
+    if(!mv) return;
+
+    // Title
+    const tEl = document.getElementById('corr-multi-title');
+    if(tEl) tEl.textContent = `Regression Coefficients — ${dep} as Dependent Variable`;
+
+    // Coefficient bars
+    _renderCoeffBars(mv);
+
+    // Model fit
+    _renderModelFit(mv);
+}
+
+function _renderCoeffBars(mv){
+    const el = document.getElementById('corr-coeff-bars');
+    if(!el) return;
+    const coeffs = mv.coefficients||{};
+    const tickers = Object.keys(coeffs);
+    const vals  = Object.values(coeffs);
+    const maxAbs = Math.max(0.0001, ...vals.map(Math.abs));
+
+    // Intercept row
+    const intercept = mv.intercept||0;
+    let html = '';
+
+    // Rows
+    [...tickers, '__intercept__'].forEach(t => {
+        const v = t==='__intercept__' ? intercept : coeffs[t];
+        if(v===undefined) return;
+        const pct = Math.abs(v)/maxAbs;
+        const isPos = v>=0;
+        const barColor = isPos ? 'rgba(34,197,94,0.7)' : 'rgba(239,68,68,0.7)';
+        const textColor = isPos ? 'var(--green)' : 'var(--red)';
+        const label = t==='__intercept__' ? 'α (const)' : t;
+        // Bar starts at 50%, positive bars go right, negative go left
+        const barW = `${(pct*48).toFixed(1)}%`;
+        const barL = isPos ? '50%' : `${(50 - pct*48).toFixed(1)}%`;
+        html += `<div class="corr-coeff-bar-row">
+            <span class="corr-coeff-bar-ticker" style="${t==='__intercept__'?'color:var(--text-dim)':''}">${label}</span>
+            <div class="corr-coeff-bar-track">
+                <div class="corr-coeff-bar-zero" style="left:50%"></div>
+                <div class="corr-coeff-bar-fill"
+                     style="left:${barL};width:${barW};background:${barColor};color:white;justify-content:${isPos?'flex-start':'flex-end'}">
+                </div>
+            </div>
+            <span class="corr-coeff-bar-val" style="color:${textColor}">
+                ${v>=0?'+':''}${v.toFixed(4)}
+            </span>
+        </div>`;
+    });
+    el.innerHTML = html || '<span style="color:var(--text-dim);font-size:12px">No coefficients available</span>';
+}
+
+function _renderModelFit(mv){
+    const el = document.getElementById('corr-model-fit');
+    if(!el) return;
+    const r2 = mv.r2||0, adj = mv.adj_r2||0;
+    const r2Pct  = (r2*100).toFixed(2);
+    const adjPct = (adj*100).toFixed(2);
+    const r2Color = r2>=0.5?'var(--green)':r2>=0.2?'var(--orange)':'var(--red)';
+    el.innerHTML = `<div class="corr-model-fit-grid">
+        <div class="corr-fit-row">
+            <span class="corr-fit-row__lbl">R² (coefficient of determination)</span>
+            <span class="corr-fit-row__val" style="color:${r2Color}">${r2Pct}%</span>
+            <div class="corr-fit-row__bar">
+                <div class="corr-fit-row__bar-fill" style="width:${r2Pct}%;background:${r2Color}"></div>
+            </div>
+        </div>
+        <div class="corr-fit-row">
+            <span class="corr-fit-row__lbl">Adjusted R²</span>
+            <span class="corr-fit-row__val" style="color:${r2Color}">${adjPct}%</span>
+            <div class="corr-fit-row__bar">
+                <div class="corr-fit-row__bar-fill" style="width:${adjPct}%;background:${r2Color}"></div>
+            </div>
+        </div>
+        <div class="corr-fit-row">
+            <span class="corr-fit-row__lbl">Regressors</span>
+            <span class="corr-fit-row__val" style="font-size:18px">${(mv.independent||[]).length}</span>
+        </div>
+    </div>`;
+}
+
+function _renderMultiTable(d){
+    const el = document.getElementById('corr-multi-table');
+    if(!el) return;
+    const mv = d.multivariate||{};
+    const tickers = d.tickers;
+    let html = `<table class="corr-multi-tbl"><thead><tr>
+        <th>Dep.</th>`;
+    tickers.forEach(t => html += `<th>${t}</th>`);
+    html += `<th>R²</th><th>Adj. R²</th></tr></thead><tbody>`;
+    tickers.forEach(dep => {
+        const m = mv[dep];
+        if(!m) return;
+        const r2 = (m.r2*100).toFixed(1), adjR2 = (m.adj_r2*100).toFixed(1);
+        const r2Color = m.r2>=0.5?'var(--green)':m.r2>=0.2?'var(--orange)':'var(--red)';
+        html += `<tr><td>${dep}</td>`;
+        tickers.forEach(t => {
+            if(t===dep){
+                html += `<td style="color:var(--text-dim);font-size:10px">—</td>`;
+            } else {
+                const v = m.coefficients[t];
+                if(v===undefined){ html += `<td>—</td>`; return; }
+                const c = v>=0?'color:var(--green)':'color:var(--red)';
+                html += `<td style="${c}">${v>=0?'+':''}${v.toFixed(4)}</td>`;
+            }
+        });
+        html += `<td style="color:${r2Color};font-weight:700">
+            ${r2}%
+            <span class="corr-r2-bar"><span style="width:${r2}%"></span></span>
+        </td>`;
+        html += `<td style="color:${r2Color}">${adjR2}%</td>`;
+        html += `</tr>`;
+    });
+    html += '</tbody></table>';
+    el.innerHTML = html;
+}
+
+/* ── Reset ─────────────────────────────────────────────────────────── */
+function resetCorr(){
+    _corrData = null;
+    _corrActivePair = null;
+    if(_corrChart){ _corrChart.destroy(); _corrChart=null; }
+    const content = document.getElementById('corr-content');
+    if(content) content.style.display = 'none';
+    const inp = document.getElementById('corr-tickers');
+    if(inp) inp.value = 'AAPL,MSFT,GOOGL,AMZN,TSLA,SPY';
+    corrPeriod = '1Y';
+    document.querySelectorAll('[data-period]').forEach(b => {
+        if((b.getAttribute('onclick')||'').includes("'corr'"))
+            b.classList.toggle('active', b.dataset.period==='1Y');
+    });
+    _clearState('corr');
 }
 
 /* ═══════════════════════════════════════════════════════════════════════════
@@ -3650,17 +4156,7 @@ function resetFund(){
     const dlEl=document.getElementById('fund-datalabels');  if(dlEl) dlEl.checked=false;
 }
 
-function resetCorr(){
-    _clearState('corr');
-    const el=document.getElementById('corr-tickers'); if(el) el.value='AAPL,MSFT,GOOGL,AMZN,TSLA,SPY';
-    ['corr-content','corr-loading'].forEach(id=>{const e=document.getElementById(id);if(e)e.style.display='none';});
-    const ct=document.getElementById('corr-table'); if(ct) ct.innerHTML='';
-    corrPeriod='1Y';
-    document.querySelectorAll('[data-period]').forEach(b=>{
-        if((b.getAttribute('onclick')||'').includes("'corr'"))
-            b.classList.toggle('active', b.dataset.period==='1Y');
-    });
-}
+// resetCorr is defined in the CORRELATION section above
 
 function resetEcon(){
     _clearState('econ');

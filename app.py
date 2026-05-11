@@ -3676,23 +3676,134 @@ def api_fund_ai_report(ticker):
 @csrf.exempt
 @login_required
 def api_correlation():
+    from math import erfc, sqrt as msqrt
     data = request.get_json()
     tickers = data.get('tickers', [])
-    period = data.get('period', '1Y')
+    period  = data.get('period', '1Y')
     days_map = {"6M": 180, "1Y": 365, "2Y": 730}
     days = days_map.get(period, 365)
     if len(tickers) < 2:
         return jsonify({"error": "Need at least 2 tickers"}), 400
+
+    def _ols(x, y):
+        """Pure-numpy OLS: returns slope, intercept, r, r2, p_value, std_err."""
+        n = len(x)
+        xm, ym = x.mean(), y.mean()
+        ss_xx = np.sum((x - xm) ** 2)
+        ss_yy = np.sum((y - ym) ** 2)
+        ss_xy = np.sum((x - xm) * (y - ym))
+        if ss_xx == 0:
+            return 0.0, float(ym), 0.0, 0.0, 1.0, 0.0
+        slope     = float(ss_xy / ss_xx)
+        intercept = float(ym - slope * xm)
+        r         = float(ss_xy / msqrt(ss_xx * ss_yy)) if ss_yy > 0 else 0.0
+        r2        = float(r ** 2)
+        y_pred    = slope * x + intercept
+        ss_res    = float(np.sum((y - y_pred) ** 2))
+        mse       = ss_res / (n - 2) if n > 2 else 0.0
+        se_slope  = float(msqrt(mse / ss_xx)) if mse > 0 else 0.0
+        t_stat    = slope / se_slope if se_slope > 0 else 0.0
+        # Two-tailed p-value using normal approximation (accurate for n > 30)
+        p_val = float(erfc(abs(t_stat) / msqrt(2)))
+        return slope, intercept, r, r2, p_val, se_slope
+
     try:
         returns = {}
         for sym in tickers:
             df = fetch_ohlc(sym.upper(), days=days)
             returns[sym.upper()] = df["Close"].pct_change().dropna()
         ret_df = pd.DataFrame(returns).dropna()
-        corr = ret_df.corr()
+        corr   = ret_df.corr()
+        tickers_clean = list(corr.columns)
+        n_obs = len(ret_df)
+
+        # ── Per-ticker descriptive stats ────────────────────────────────────
+        ticker_stats = {}
+        for t in tickers_clean:
+            s = ret_df[t]
+            ann_ret  = float((1 + s.mean()) ** 252 - 1)
+            vol      = float(s.std() * np.sqrt(252))
+            sharpe   = float(ann_ret / vol) if vol > 0 else 0.0
+            skew     = float(s.skew())
+            kurt     = float(s.kurt())
+            max_dd_val = 0.0
+            cum = (1 + s).cumprod()
+            peak = cum.cummax()
+            dd = ((cum - peak) / peak).min()
+            max_dd_val = float(dd)
+            ticker_stats[t] = {
+                "ann_return": round(ann_ret * 100, 2),
+                "volatility": round(vol * 100, 2),
+                "sharpe":     round(sharpe, 3),
+                "skew":       round(skew, 3),
+                "kurtosis":   round(kurt, 3),
+                "max_drawdown": round(max_dd_val * 100, 2),
+            }
+
+        # ── Pairwise OLS regression ─────────────────────────────────────────
+        regression = {}
+        for i, t1 in enumerate(tickers_clean):
+            for j, t2 in enumerate(tickers_clean):
+                if i >= j:
+                    continue
+                x = ret_df[t1].values.astype(float)
+                y = ret_df[t2].values.astype(float)
+                sl, ic, r, r2, pv, se = _ols(x, y)
+                key = f"{t1}_vs_{t2}"
+                regression[key] = {
+                    "x_ticker":  t1,
+                    "y_ticker":  t2,
+                    "slope":     round(sl, 6),
+                    "intercept": round(ic, 6),
+                    "r":         round(r,  4),
+                    "r2":        round(r2, 4),
+                    "p_value":   round(pv, 6),
+                    "std_err":   round(se, 6),
+                }
+
+        # ── Multivariate OLS (each ticker as dependent) ─────────────────────
+        multivariate = {}
+        for dep in tickers_clean:
+            indeps = [t for t in tickers_clean if t != dep]
+            if not indeps:
+                continue
+            y = ret_df[dep].values.astype(float)
+            X = ret_df[indeps].values.astype(float)
+            X_c = np.column_stack([np.ones(len(X)), X])
+            try:
+                coeffs, _, _, _ = np.linalg.lstsq(X_c, y, rcond=None)
+                y_pred = X_c @ coeffs
+                ss_res = float(np.sum((y - y_pred) ** 2))
+                ss_tot = float(np.sum((y - y.mean()) ** 2))
+                r2     = float(1 - ss_res / ss_tot) if ss_tot > 0 else 0.0
+                n, k   = len(y), len(indeps)
+                adj_r2 = float(1 - (1 - r2) * (n - 1) / (n - k - 1)) if n > k + 1 else 0.0
+                coeff_dict = {indeps[i]: round(float(coeffs[i + 1]), 6) for i in range(len(indeps))}
+                multivariate[dep] = {
+                    "dependent":    dep,
+                    "independent":  indeps,
+                    "intercept":    round(float(coeffs[0]), 6),
+                    "coefficients": coeff_dict,
+                    "r2":           round(r2, 4),
+                    "adj_r2":       round(adj_r2, 4),
+                }
+            except Exception:
+                pass
+
+        # ── Sampled returns for scatter plots (max 300 pts to keep payload lean)
+        step = max(1, n_obs // 300)
+        returns_data = {t: [round(v, 6) for v in ret_df[t].values[::step].tolist()]
+                        for t in tickers_clean}
+
         return jsonify({
-            "tickers": list(corr.columns),
-            "matrix": corr.values.tolist()
+            "tickers":      tickers_clean,
+            "matrix":       corr.values.tolist(),
+            "ticker_stats": ticker_stats,
+            "regression":   regression,
+            "multivariate": multivariate,
+            "returns_data": returns_data,
+            "n_obs":        n_obs,
+            "period":       period,
         })
     except Exception as e:
         return jsonify({"error": str(e)}), 400

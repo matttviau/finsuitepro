@@ -393,27 +393,131 @@
 {% elif module == 'correlation' %}
 <div class="module-header">
     <span class="module-header__dot" style="color:var(--orange)">●</span>
-    <span class="module-header__title">Correlation Matrix</span>
-    <span class="module-header__sub">Rolling return correlations across tickers</span>
+    <span class="module-header__title">Correlation &amp; Regression Analysis</span>
+    <span class="module-header__sub">Heatmap · OLS regression · multivariate factor modelling</span>
     <span class="module-header__tag" style="background:var(--orange)">CORR</span>
     <button class="help-btn" onclick="showHelp('correlation')" title="Help & Instructions">? Help</button>
 </div>
+
+<!-- Controls -->
 <div class="controls">
     <div class="controls__row">
-        <span class="controls__label">Tickers (comma-separated)</span>
-        <input type="text" id="corr-tickers" class="form-control" style="width:360px;font-size:14px;font-weight:600" value="AAPL,MSFT,GOOGL,AMZN,TSLA,SPY">
+        <span class="controls__label">Tickers</span>
+        <input type="text" id="corr-tickers" class="form-control"
+               style="width:380px;font-size:13px;font-weight:600;letter-spacing:0.5px;font-family:var(--mono)"
+               value="AAPL,MSFT,GOOGL,AMZN,TSLA,SPY"
+               onkeydown="if(event.key==='Enter')runCorr()">
         <span class="controls__label">Period</span>
         <button class="period-btn" data-period="6M" onclick="setPeriod(this,'corr')">6M</button>
         <button class="period-btn active" data-period="1Y" onclick="setPeriod(this,'corr')">1Y</button>
         <button class="period-btn" data-period="2Y" onclick="setPeriod(this,'corr')">2Y</button>
-        <button class="btn btn--primary btn--sm" onclick="runCorr()">Compute</button>
-        <button class="btn btn--sm" onclick="resetCorr()" title="Clear results and reset view" style="color:var(--text-dim);border-color:var(--border);background:transparent">↺ Reset</button>
+        <button class="btn btn--primary btn--sm" onclick="runCorr()">▶ Analyse</button>
+        <button class="btn btn--sm" onclick="resetCorr()"
+                style="color:var(--text-dim);border-color:var(--border);background:transparent">↺ Reset</button>
     </div>
 </div>
-<div id="corr-loading" class="loading" style="display:none"><div class="spinner"></div> Computing correlations...</div>
-<div id="corr-content" style="display:none">
-    <div class="card"><div id="corr-table"></div></div>
+
+<!-- Loading -->
+<div id="corr-loading" class="loading" style="display:none">
+    <div class="spinner"></div> Computing correlations &amp; regressions…
 </div>
+
+<!-- Results -->
+<div id="corr-content" style="display:none">
+
+    <!-- Tab bar -->
+    <div class="corr-tab-bar">
+        <button class="corr-tab active" id="corr-tab-matrix"   onclick="corrSwitchTab('matrix')">
+            <span class="corr-tab-icon">⊞</span> Correlation Matrix
+        </button>
+        <button class="corr-tab" id="corr-tab-scatter" onclick="corrSwitchTab('scatter')">
+            <span class="corr-tab-icon">◎</span> Scatter &amp; Regression
+        </button>
+        <button class="corr-tab" id="corr-tab-multi"   onclick="corrSwitchTab('multi')">
+            <span class="corr-tab-icon">≋</span> Multivariate OLS
+        </button>
+        <!-- Summary badge injected by JS -->
+        <div class="corr-tab-meta" id="corr-tab-meta"></div>
+    </div>
+
+    <!-- ── TAB 1 · Matrix ──────────────────────────────────────────────── -->
+    <div class="corr-panel" id="corr-panel-matrix">
+        <!-- Stat chips row -->
+        <div class="corr-stat-row" id="corr-stat-row"></div>
+
+        <div class="card" style="overflow-x:auto">
+            <div id="corr-table"></div>
+        </div>
+
+        <!-- Per-ticker stats table -->
+        <div class="card" style="margin-top:12px">
+            <div class="corr-section-hdr">Descriptive Statistics</div>
+            <div id="corr-ticker-stats"></div>
+        </div>
+    </div>
+
+    <!-- ── TAB 2 · Scatter & Regression ───────────────────────────────── -->
+    <div class="corr-panel" id="corr-panel-scatter" style="display:none">
+        <!-- Pair selector -->
+        <div class="corr-pair-selector">
+            <span class="controls__label">Pair</span>
+            <select id="corr-pair-select" class="form-control corr-pair-select"
+                    onchange="corrRenderActivePair()"></select>
+            <span class="corr-pair-hint">Select any X vs Y pair to plot</span>
+        </div>
+
+        <div class="corr-scatter-grid">
+            <!-- Chart -->
+            <div class="card corr-scatter-card">
+                <div class="corr-section-hdr" id="corr-scatter-title">Scatter Plot</div>
+                <div style="position:relative;height:380px">
+                    <canvas id="corr-scatter-canvas"></canvas>
+                </div>
+                <div class="corr-reg-equation" id="corr-reg-eq"></div>
+            </div>
+
+            <!-- Stats panel -->
+            <div class="corr-reg-stats-panel">
+                <div class="corr-section-hdr">OLS Statistics</div>
+                <div id="corr-reg-stats-grid"></div>
+
+                <div class="corr-section-hdr" style="margin-top:18px">All Pairs Summary</div>
+                <div id="corr-pairs-summary-table"></div>
+            </div>
+        </div>
+    </div>
+
+    <!-- ── TAB 3 · Multivariate ───────────────────────────────────────── -->
+    <div class="corr-panel" id="corr-panel-multi" style="display:none">
+        <div class="corr-pair-selector">
+            <span class="controls__label">Dependent variable</span>
+            <select id="corr-dep-select" class="form-control corr-pair-select"
+                    onchange="corrRenderMultivariate()"></select>
+            <span class="corr-pair-hint">Other tickers become independent regressors</span>
+        </div>
+
+        <div class="corr-multi-grid">
+            <!-- Coefficient bars -->
+            <div class="card corr-coeff-card">
+                <div class="corr-section-hdr" id="corr-multi-title">Regression Coefficients (β)</div>
+                <div id="corr-coeff-bars"></div>
+            </div>
+
+            <!-- Model stats -->
+            <div class="card corr-model-stats-card">
+                <div class="corr-section-hdr">Model Fit</div>
+                <div id="corr-model-fit"></div>
+            </div>
+        </div>
+
+        <!-- Full results table -->
+        <div class="card" style="margin-top:12px">
+            <div class="corr-section-hdr">Full OLS Results — All Dependent Variables</div>
+            <div id="corr-multi-table"></div>
+        </div>
+    </div>
+
+</div><!-- /#corr-content -->
 
 <!-- ═══════════════ ECONOMIC DATA ═══════════════ -->
 {% elif module == 'economic' %}
