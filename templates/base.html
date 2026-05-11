@@ -32,6 +32,7 @@
             'fundamentals':'SEC Fundamentals',
             'correlation': 'Correlation Matrix',
             'economic':    'Economic Data',
+            'global_macro': 'Global Macro Dashboard',
             'news':        'News & Sentiment',
             'signal_page': 'Signal Analysis',
             'alerts_page': 'Alert Center',
@@ -61,6 +62,9 @@
         </a>
         <a href="{{ url_for('economic') }}" class="sidebar__item sidebar__item--red {% if request.endpoint == 'economic' %}active{% endif %}">
             <span class="sidebar__dot" style="color:var(--red)">●</span> Economic Data
+        </a>
+        <a href="{{ url_for('global_macro') }}" class="sidebar__item sidebar__item--teal {% if request.endpoint == 'global_macro' %}active{% endif %}">
+            <span class="sidebar__dot" style="color:#14B8A6">●</span> Global Macro
         </a>
         <a href="{{ url_for('technical') }}" class="sidebar__item sidebar__item--blue {% if request.endpoint == 'technical' %}active{% endif %}">
             <span class="sidebar__dot" style="color:var(--blue)">●</span> Technical Analysis

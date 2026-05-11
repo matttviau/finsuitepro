@@ -1,6 +1,6 @@
 {% extends "base.html" %}
 {% block title %}
-{% if module == 'technical' %}Technical Analysis{% elif module == 'fundamentals' %}SEC Fundamentals{% elif module == 'correlation' %}Correlation Matrix{% elif module == 'economic' %}Economic Data{% elif module == 'news' %}News & Sentiment{% elif module == 'signal' %}Signal Analysis{% elif module == 'listings' %}Listings Explorer{% endif %} — Paralux Terminal
+{% if module == 'technical' %}Technical Analysis{% elif module == 'fundamentals' %}SEC Fundamentals{% elif module == 'correlation' %}Correlation Matrix{% elif module == 'global_macro' %}Global Macro Dashboard{% elif module == 'economic' %}Economic Data{% elif module == 'news' %}News & Sentiment{% elif module == 'signal' %}Signal Analysis{% elif module == 'listings' %}Listings Explorer{% endif %} — Paralux Terminal
 {% endblock %}
 
 {% block content %}
@@ -518,6 +518,224 @@
     </div>
 
 </div><!-- /#corr-content -->
+
+<!-- ═══════════════ GLOBAL MACRO ═══════════════ -->
+{% elif module == 'global_macro' %}
+<div class="module-header">
+    <span class="module-header__dot" style="color:#14B8A6">●</span>
+    <span class="module-header__title">Global Macro Dashboard</span>
+    <span class="module-header__sub">Equities · Bonds · Yields · Commodities · FX · Crypto · Volatility</span>
+    <span class="module-header__tag" style="background:#14B8A6;color:#000">MACRO</span>
+    <button class="btn btn--sm gm-refresh-btn" onclick="loadGM(true)" title="Refresh data">↻ Refresh</button>
+</div>
+
+<!-- Loading state -->
+<div id="gm-loading" class="loading">
+    <div class="spinner"></div>
+    <span id="gm-loading-txt">Loading global markets…</span>
+</div>
+
+<!-- Dashboard (hidden until data loaded) -->
+<div id="gm-dash" style="display:none">
+
+    <!-- ── MARKET RIBBON ─────────────────────────────────────────────── -->
+    <div class="gm-ribbon" id="gm-ribbon"></div>
+
+    <!-- ── TIMESTAMP & CONTROLS ──────────────────────────────────────── -->
+    <div class="gm-toolbar">
+        <span class="gm-ts" id="gm-ts"></span>
+        <div class="gm-view-btns">
+            <button class="gm-view-btn active" id="gm-vbtn-overview"  onclick="gmSetView('overview')">⊞ Overview</button>
+            <button class="gm-view-btn"        id="gm-vbtn-equities"  onclick="gmSetView('equities')">📈 Equities</button>
+            <button class="gm-view-btn"        id="gm-vbtn-rates"     onclick="gmSetView('rates')">📉 Rates</button>
+            <button class="gm-view-btn"        id="gm-vbtn-cmdty"     onclick="gmSetView('cmdty')">🛢 Commodities</button>
+            <button class="gm-view-btn"        id="gm-vbtn-fx"        onclick="gmSetView('fx')">💱 FX &amp; Crypto</button>
+            <button class="gm-view-btn"        id="gm-vbtn-sectors"   onclick="gmSetView('sectors')">🔲 Sectors</button>
+        </div>
+    </div>
+
+    <!-- ══ OVERVIEW VIEW ═════════════════════════════════════════════ -->
+    <div class="gm-view" id="gm-view-overview">
+        <!-- Top row: yield curve + US equities -->
+        <div class="gm-top-row">
+            <!-- Yield Curve card -->
+            <div class="card gm-yc-card">
+                <div class="gm-card-hdr">
+                    <span class="gm-card-hdr__title">US Treasury Yield Curve</span>
+                    <span class="gm-card-hdr__badge" id="gm-spread-badge"></span>
+                </div>
+                <div style="position:relative;height:200px">
+                    <canvas id="gm-yc-chart"></canvas>
+                </div>
+                <div class="gm-yc-readings" id="gm-yc-readings"></div>
+            </div>
+            <!-- US Equities -->
+            <div class="card gm-section-card" id="gm-card-us_eq">
+                <div class="gm-card-hdr">
+                    <span class="gm-card-hdr__dot" style="background:#3B82F6"></span>
+                    <span class="gm-card-hdr__title">US Equities</span>
+                </div>
+                <div class="gm-tiles" id="gm-tiles-us_eq"></div>
+            </div>
+        </div>
+
+        <!-- Sector heatmap -->
+        <div class="card">
+            <div class="gm-card-hdr">
+                <span class="gm-card-hdr__dot" style="background:#10B981"></span>
+                <span class="gm-card-hdr__title">US Sector Performance (SPDR ETFs)</span>
+            </div>
+            <div class="gm-sector-heatmap" id="gm-sector-heatmap"></div>
+        </div>
+
+        <!-- Middle row: International + Fixed Income -->
+        <div class="gm-mid-row">
+            <div class="card gm-section-card">
+                <div class="gm-card-hdr">
+                    <span class="gm-card-hdr__dot" style="background:#8B5CF6"></span>
+                    <span class="gm-card-hdr__title">International Equities</span>
+                </div>
+                <div class="gm-tiles" id="gm-tiles-intl_eq"></div>
+            </div>
+            <div class="card gm-section-card">
+                <div class="gm-card-hdr">
+                    <span class="gm-card-hdr__dot" style="background:#D97706"></span>
+                    <span class="gm-card-hdr__title">Fixed Income ETFs</span>
+                </div>
+                <div class="gm-tiles" id="gm-tiles-fi"></div>
+            </div>
+        </div>
+
+        <!-- Bottom row: Commodities + FX + Vol + Crypto -->
+        <div class="gm-bot-row">
+            <div class="card gm-section-card">
+                <div class="gm-card-hdr">
+                    <span class="gm-card-hdr__dot" style="background:#F97316"></span>
+                    <span class="gm-card-hdr__title">Commodities</span>
+                </div>
+                <div class="gm-tiles" id="gm-tiles-cmdty"></div>
+            </div>
+            <div class="card gm-section-card">
+                <div class="gm-card-hdr">
+                    <span class="gm-card-hdr__dot" style="background:#06B6D4"></span>
+                    <span class="gm-card-hdr__title">Currencies &amp; FX</span>
+                </div>
+                <div class="gm-tiles" id="gm-tiles-fx"></div>
+            </div>
+            <div class="card gm-section-card">
+                <div class="gm-card-hdr">
+                    <span class="gm-card-hdr__dot" style="background:#A78BFA"></span>
+                    <span class="gm-card-hdr__title">Crypto</span>
+                </div>
+                <div class="gm-tiles" id="gm-tiles-crypto"></div>
+            </div>
+            <div class="card gm-section-card">
+                <div class="gm-card-hdr">
+                    <span class="gm-card-hdr__dot" style="background:#EF4444"></span>
+                    <span class="gm-card-hdr__title">Volatility</span>
+                </div>
+                <div class="gm-tiles" id="gm-tiles-vol"></div>
+            </div>
+        </div>
+    </div><!-- /#gm-view-overview -->
+
+    <!-- ══ EQUITIES VIEW ═════════════════════════════════════════════ -->
+    <div class="gm-view" id="gm-view-equities" style="display:none">
+        <div class="gm-full-section">
+            <div class="card">
+                <div class="gm-card-hdr"><span class="gm-card-hdr__dot" style="background:#3B82F6"></span><span class="gm-card-hdr__title">US Equities</span></div>
+                <div class="gm-tiles gm-tiles--large" id="gm-tiles2-us_eq"></div>
+            </div>
+            <div class="card" style="margin-top:12px">
+                <div class="gm-card-hdr"><span class="gm-card-hdr__dot" style="background:#8B5CF6"></span><span class="gm-card-hdr__title">International Equities</span></div>
+                <div class="gm-tiles gm-tiles--large" id="gm-tiles2-intl_eq"></div>
+            </div>
+        </div>
+    </div>
+
+    <!-- ══ RATES VIEW ════════════════════════════════════════════════ -->
+    <div class="gm-view" id="gm-view-rates" style="display:none">
+        <div class="gm-rates-grid">
+            <div class="card">
+                <div class="gm-card-hdr"><span class="gm-card-hdr__title">Yield Curve (Live)</span></div>
+                <div style="position:relative;height:280px"><canvas id="gm-yc-chart2"></canvas></div>
+                <div class="gm-yc-readings" id="gm-yc-readings2"></div>
+            </div>
+            <div class="card">
+                <div class="gm-card-hdr"><span class="gm-card-hdr__dot" style="background:#F59E0B"></span><span class="gm-card-hdr__title">Treasury Yields (Quoted)</span></div>
+                <div class="gm-tiles gm-tiles--large" id="gm-tiles2-yields"></div>
+            </div>
+        </div>
+        <div class="card" style="margin-top:12px">
+            <div class="gm-card-hdr"><span class="gm-card-hdr__dot" style="background:#D97706"></span><span class="gm-card-hdr__title">Fixed Income ETFs</span></div>
+            <div class="gm-tiles gm-tiles--large" id="gm-tiles2-fi"></div>
+        </div>
+    </div>
+
+    <!-- ══ COMMODITIES VIEW ══════════════════════════════════════════ -->
+    <div class="gm-view" id="gm-view-cmdty" style="display:none">
+        <div class="card">
+            <div class="gm-card-hdr"><span class="gm-card-hdr__dot" style="background:#F97316"></span><span class="gm-card-hdr__title">Commodities</span></div>
+            <div class="gm-tiles gm-tiles--large" id="gm-tiles2-cmdty"></div>
+        </div>
+    </div>
+
+    <!-- ══ FX & CRYPTO VIEW ══════════════════════════════════════════ -->
+    <div class="gm-view" id="gm-view-fx" style="display:none">
+        <div class="gm-mid-row">
+            <div class="card">
+                <div class="gm-card-hdr"><span class="gm-card-hdr__dot" style="background:#06B6D4"></span><span class="gm-card-hdr__title">Currencies &amp; FX</span></div>
+                <div class="gm-tiles gm-tiles--large" id="gm-tiles2-fx"></div>
+            </div>
+            <div class="card">
+                <div class="gm-card-hdr"><span class="gm-card-hdr__dot" style="background:#A78BFA"></span><span class="gm-card-hdr__title">Crypto Assets</span></div>
+                <div class="gm-tiles gm-tiles--large" id="gm-tiles2-crypto"></div>
+            </div>
+        </div>
+    </div>
+
+    <!-- ══ SECTORS VIEW ══════════════════════════════════════════════ -->
+    <div class="gm-view" id="gm-view-sectors" style="display:none">
+        <div class="card">
+            <div class="gm-card-hdr"><span class="gm-card-hdr__title">Sector Heatmap (1D · 1W · 1M · YTD)</span>
+                <div class="gm-sector-view-btns">
+                    <button class="gm-sv-btn active" onclick="gmSectorPeriod('chg_pct','1D',this)">1D</button>
+                    <button class="gm-sv-btn" onclick="gmSectorPeriod('week_pct','1W',this)">1W</button>
+                    <button class="gm-sv-btn" onclick="gmSectorPeriod('month_pct','1M',this)">1M</button>
+                    <button class="gm-sv-btn" onclick="gmSectorPeriod('ytd_pct','YTD',this)">YTD</button>
+                </div>
+            </div>
+            <div class="gm-sector-heatmap gm-sector-heatmap--large" id="gm-sector-heatmap2"></div>
+        </div>
+        <div class="card" style="margin-top:12px">
+            <div class="gm-card-hdr"><span class="gm-card-hdr__dot" style="background:#10B981"></span><span class="gm-card-hdr__title">Sector Details</span></div>
+            <div class="gm-tiles gm-tiles--large" id="gm-tiles2-sectors"></div>
+        </div>
+    </div>
+
+    <!-- ══ DETAIL CHART DRAWER ═══════════════════════════════════════ -->
+    <div class="gm-chart-drawer" id="gm-chart-drawer" style="display:none">
+        <div class="gm-chart-drawer__header">
+            <div>
+                <span class="gm-chart-drawer__sym" id="gm-chart-sym"></span>
+                <span class="gm-chart-drawer__name" id="gm-chart-name"></span>
+            </div>
+            <div style="display:flex;align-items:center;gap:8px">
+                <div class="gm-chart-period-btns">
+                    <button class="gm-cp-btn" onclick="gmChartPeriod(30,this)">1M</button>
+                    <button class="gm-cp-btn" onclick="gmChartPeriod(90,this)">3M</button>
+                    <button class="gm-cp-btn active" onclick="gmChartPeriod(180,this)">6M</button>
+                    <button class="gm-cp-btn" onclick="gmChartPeriod(252,this)">1Y</button>
+                </div>
+                <button class="gm-chart-drawer__close" onclick="gmCloseChart()">✕</button>
+            </div>
+        </div>
+        <div style="position:relative;height:260px;padding:0 4px 8px">
+            <canvas id="gm-detail-chart"></canvas>
+        </div>
+    </div>
+
+</div><!-- /#gm-dash -->
 
 <!-- ═══════════════ ECONOMIC DATA ═══════════════ -->
 {% elif module == 'economic' %}

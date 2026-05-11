@@ -329,6 +329,29 @@ _FRED_SESSION = _polygon_session()
 _YF_CACHE: dict = {}
 _YF_INTRADAY_CACHE: dict = {}   # (sym, interval, period_str) → (df, fetched_at)
 _MACRO_CACHE: dict = {}         # FRED macro series cache keyed by series_id
+_GM_CACHE: dict = {}            # {data, fetched_at} — refreshed every 15 min
+_GM_CACHE_TTL = 900             # seconds
+
+GM_SECTIONS = [
+    {"id":"us_eq",    "label":"US Equities",            "color":"#3B82F6",
+     "tickers":{"SPY":"S&P 500","QQQ":"Nasdaq 100","IWM":"Russell 2000","DIA":"Dow Jones","VTI":"Total Market","MDY":"Mid-Cap 400"}},
+    {"id":"intl_eq",  "label":"International Equities", "color":"#8B5CF6",
+     "tickers":{"EFA":"MSCI EAFE","EEM":"MSCI Emerging","EWG":"Germany DAX","EWU":"UK FTSE 100","EWJ":"Japan Nikkei","FXI":"China Large Cap","EWZ":"Brazil","EWY":"South Korea","INDA":"India","EWA":"Australia"}},
+    {"id":"yields",   "label":"US Treasury Yields",     "color":"#F59E0B",
+     "tickers":{"^IRX":"3-Mo T-Bill","^FVX":"5-Year Note","^TNX":"10-Year Note","^TYX":"30-Year Bond"}},
+    {"id":"fi",       "label":"Fixed Income ETFs",      "color":"#D97706",
+     "tickers":{"TLT":"20Y+ Treasury","IEF":"7-10Y Treasury","SHY":"1-3Y Treasury","HYG":"High Yield Corp","LQD":"IG Corp","AGG":"US Aggregate","EMB":"EM Dollar Bond","MBB":"Mortgage-Backed"}},
+    {"id":"cmdty",    "label":"Commodities",            "color":"#F97316",
+     "tickers":{"GC=F":"Gold","SI=F":"Silver","HG=F":"Copper","PL=F":"Platinum","CL=F":"WTI Crude","BZ=F":"Brent Crude","NG=F":"Natural Gas","ZW=F":"Wheat","ZC=F":"Corn","ZS=F":"Soybeans"}},
+    {"id":"fx",       "label":"Currencies & FX",        "color":"#06B6D4",
+     "tickers":{"DX-Y.NYB":"US Dollar Index","EURUSD=X":"EUR/USD","GBPUSD=X":"GBP/USD","JPY=X":"USD/JPY","CNY=X":"USD/CNY","AUDUSD=X":"AUD/USD","CADUSD=X":"CAD/USD","CHFUSD=X":"CHF/USD"}},
+    {"id":"crypto",   "label":"Crypto Assets",          "color":"#A78BFA",
+     "tickers":{"BTC-USD":"Bitcoin","ETH-USD":"Ethereum","SOL-USD":"Solana","BNB-USD":"BNB"}},
+    {"id":"vol",      "label":"Volatility",             "color":"#EF4444",
+     "tickers":{"^VIX":"CBOE VIX","^VXN":"Nasdaq VIX","^RVX":"Russell VIX","UVXY":"Ultra VIX Short"}},
+    {"id":"sectors",  "label":"US Sectors (SPDR)",      "color":"#10B981",
+     "tickers":{"XLK":"Technology","XLF":"Financials","XLE":"Energy","XLV":"Health Care","XLI":"Industrials","XLP":"Consumer Staples","XLY":"Consumer Discr.","XLC":"Communication","XLB":"Materials","XLRE":"Real Estate","XLU":"Utilities"}},
+]
 
 
 def fetch_ohlc(ticker: str, days: int = 730) -> pd.DataFrame:
@@ -3201,6 +3224,12 @@ def economic():
     return render_template('module.html', module='economic', fred_catalogue=FRED_CATALOGUE, fred_flat=FRED_FLAT)
 
 
+@app.route('/global_macro')
+@login_required
+def global_macro():
+    return render_template('module.html', module='global_macro')
+
+
 @app.route('/news')
 @login_required
 def news():
@@ -3807,6 +3836,98 @@ def api_correlation():
         })
     except Exception as e:
         return jsonify({"error": str(e)}), 400
+
+
+@app.route('/api/global_macro')
+@login_required
+def api_global_macro():
+    import threading, time as _time
+    global _GM_CACHE
+    # Use cache if fresh
+    if _GM_CACHE.get('fetched_at') and (_time.time() - _GM_CACHE['fetched_at'] < _GM_CACHE_TTL):
+        return jsonify(_GM_CACHE['data'])
+
+    all_tickers = {}
+    for sec in GM_SECTIONS:
+        for sym, name in sec['tickers'].items():
+            all_tickers[sym] = name
+
+    results = {}
+    errors  = []
+    lock    = threading.Lock()
+
+    def _fetch(sym):
+        try:
+            df = fetch_ohlc(sym, days=400)
+            if df.empty or len(df) < 2:
+                return
+            closes = df['Close']
+            last   = float(closes.iloc[-1])
+            prev   = float(closes.iloc[-2])
+            chg    = last - prev
+            chg_p  = (chg / prev * 100) if prev else 0.0
+            w_p    = ((last / float(closes.iloc[max(0,len(closes)-6)])) - 1)*100
+            m_p    = ((last / float(closes.iloc[max(0,len(closes)-22)])) - 1)*100
+            # YTD
+            yr_start = pd.Timestamp(pd.Timestamp.today().year, 1, 1)
+            ytd_df = df[df.index < yr_start]
+            ytd_p  = ((last / float(ytd_df['Close'].iloc[-1])) - 1)*100 if not ytd_df.empty else 0.0
+            # 52w
+            hi52 = float(closes.max())
+            lo52 = float(closes.min())
+            # 30-day sparkline
+            spark = [round(float(v), 4) for v in closes.iloc[-30:].tolist()]
+            # 1-year history for chart
+            hist_closes = [round(float(v),4) for v in closes.iloc[-252:].tolist()]
+            hist_dates  = [d.strftime('%Y-%m-%d') for d in df.index[-252:]]
+            with lock:
+                results[sym] = {
+                    "name":      all_tickers[sym],
+                    "price":     round(last, 4),
+                    "change":    round(chg, 4),
+                    "chg_pct":   round(chg_p, 3),
+                    "week_pct":  round(w_p, 3),
+                    "month_pct": round(m_p, 3),
+                    "ytd_pct":   round(ytd_p, 3),
+                    "hi52":      round(hi52, 4),
+                    "lo52":      round(lo52, 4),
+                    "sparkline": spark,
+                    "hist_dates": hist_dates,
+                    "hist_close": hist_closes,
+                }
+        except Exception as ex:
+            with lock:
+                errors.append(f"{sym}: {ex}")
+
+    threads = [threading.Thread(target=_fetch, args=(s,), daemon=True) for s in all_tickers]
+    for t in threads: t.start()
+    for t in threads: t.join(timeout=30)
+
+    # Build yield curve snapshot (latest values of yield tickers)
+    yield_curve = {}
+    for sym, label in [("^IRX","3M"),("^FVX","5Y"),("^TNX","10Y"),("^TYX","30Y")]:
+        if sym in results:
+            yield_curve[label] = {"value": results[sym]["price"], "chg": results[sym]["chg_pct"]}
+
+    out = {
+        "sections": [
+            {
+                "id":    s["id"],
+                "label": s["label"],
+                "color": s["color"],
+                "items": [
+                    {"symbol": sym, **results[sym]}
+                    for sym in s["tickers"] if sym in results
+                ]
+            }
+            for s in GM_SECTIONS
+        ],
+        "yield_curve": yield_curve,
+        "errors":      errors,
+        "ts":          pd.Timestamp.now().strftime('%H:%M:%S UTC'),
+    }
+    _GM_CACHE = {"data": out, "fetched_at": _time.time()}
+    return jsonify(out)
 
 
 @app.route('/api/fred/<series_id>')

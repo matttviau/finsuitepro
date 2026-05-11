@@ -2663,6 +2663,396 @@ function resetCorr(){
 }
 
 /* ═══════════════════════════════════════════════════════════════════════════
+   GLOBAL MACRO DASHBOARD
+   ═══════════════════════════════════════════════════════════════════════════ */
+
+let _gmData        = null;   // full API response
+let _gmYCChart     = null;   // Chart.js yield curve (overview)
+let _gmYCChart2    = null;   // Chart.js yield curve (rates view)
+let _gmDetailChart = null;   // Chart.js detail drawer chart
+let _gmChartData   = null;   // {dates, closes, symbol, name} for detail chart
+
+/* ── Entry point ─────────────────────────────────────────────────────────── */
+function loadGM(forceRefresh) {
+    const loading = document.getElementById('gm-loading');
+    const dash    = document.getElementById('gm-dash');
+    if (!loading) return;
+    if (!forceRefresh && _gmData) { renderGM(_gmData); return; }
+    loading.style.display = '';
+    dash.style.display    = 'none';
+    const txt = document.getElementById('gm-loading-txt');
+    if (txt) txt.textContent = 'Loading global markets… (fetching ~60 instruments)';
+    fetch('/api/global_macro')
+        .then(r => r.json())
+        .then(data => {
+            _gmData = data;
+            renderGM(data);
+        })
+        .catch(err => {
+            if (loading) {
+                loading.innerHTML = '<span style="color:var(--red)">Failed to load market data: ' + err.message + '</span>';
+            }
+        });
+}
+
+/* ── Top-level render ────────────────────────────────────────────────────── */
+function renderGM(data) {
+    const loading = document.getElementById('gm-loading');
+    const dash    = document.getElementById('gm-dash');
+    if (!dash) return;
+
+    // Ribbon
+    _gmRibbon(data);
+
+    // Timestamp
+    const tsEl = document.getElementById('gm-ts');
+    if (tsEl) tsEl.textContent = 'Data as of ' + (data.ts || '');
+
+    // Overview view — all section tiles
+    const overviewSections = [
+        { id:'us_eq',   container:'gm-tiles-us_eq'   },
+        { id:'intl_eq', container:'gm-tiles-intl_eq' },
+        { id:'fi',      container:'gm-tiles-fi'      },
+        { id:'cmdty',   container:'gm-tiles-cmdty'   },
+        { id:'fx',      container:'gm-tiles-fx'      },
+        { id:'crypto',  container:'gm-tiles-crypto'  },
+        { id:'vol',     container:'gm-tiles-vol'     },
+    ];
+    overviewSections.forEach(({ id, container }) => {
+        _gmRenderSection(id, container, data, false);
+    });
+
+    // Equities view
+    _gmRenderSection('us_eq',   'gm-tiles2-us_eq',   data, true);
+    _gmRenderSection('intl_eq', 'gm-tiles2-intl_eq', data, true);
+
+    // Rates view
+    _gmRenderSection('yields',  'gm-tiles2-yields', data, true);
+    _gmRenderSection('fi',      'gm-tiles2-fi',     data, true);
+
+    // Commodities view
+    _gmRenderSection('cmdty', 'gm-tiles2-cmdty', data, true);
+
+    // FX / Crypto view
+    _gmRenderSection('fx',     'gm-tiles2-fx',     data, true);
+    _gmRenderSection('crypto', 'gm-tiles2-crypto', data, true);
+
+    // Sectors view
+    _gmRenderSection('sectors', 'gm-tiles2-sectors', data, true);
+
+    // Yield curves
+    _gmYieldCurve(data.yield_curve, 'gm-yc-chart',  'gm-yc-readings');
+    _gmYieldCurve(data.yield_curve, 'gm-yc-chart2', 'gm-yc-readings2');
+
+    // Sector heatmaps
+    _gmSectorHeatmap(data, 'chg_pct', 'gm-sector-heatmap');
+    _gmSectorHeatmap(data, 'chg_pct', 'gm-sector-heatmap2');
+
+    // Show dashboard
+    if (loading) loading.style.display = 'none';
+    dash.style.display = '';
+}
+
+/* ── View switcher ───────────────────────────────────────────────────────── */
+function gmSetView(view) {
+    const views = ['overview','equities','rates','cmdty','fx','sectors'];
+    views.forEach(v => {
+        const el = document.getElementById('gm-view-' + v);
+        if (el) el.style.display = (v === view) ? '' : 'none';
+        const btn = document.getElementById('gm-vbtn-' + v);
+        if (btn) btn.classList.toggle('active', v === view);
+    });
+    // Re-render yield curve charts when switching to rates view (canvas may need resize)
+    if (view === 'rates' && _gmData) {
+        setTimeout(() => {
+            _gmYieldCurve(_gmData.yield_curve, 'gm-yc-chart2', 'gm-yc-readings2');
+        }, 50);
+    }
+}
+
+/* ── Market ribbon ───────────────────────────────────────────────────────── */
+function _gmRibbon(data) {
+    const ribbonEl = document.getElementById('gm-ribbon');
+    if (!ribbonEl) return;
+    const ribbonSyms = ['SPY','QQQ','^VIX','DX-Y.NYB','GC=F','^TNX','BTC-USD','CL=F','ETH-USD','IWM'];
+    const allItems   = {};
+    (data.sections || []).forEach(sec => {
+        (sec.items || []).forEach(item => { allItems[item.symbol] = item; });
+    });
+    let html = '';
+    ribbonSyms.forEach(sym => {
+        const item = allItems[sym];
+        if (!item) return;
+        const up   = item.chg_pct >= 0;
+        const sign = up ? '+' : '';
+        const cls  = up ? 'gm-ribbon-pill--up' : 'gm-ribbon-pill--down';
+        html += `<div class="gm-ribbon-pill ${cls}" onclick="gmOpenChart('${_gmEsc(sym)}','${_gmEsc(item.name)}',${JSON.stringify(item.hist_dates)},${JSON.stringify(item.hist_close)})">
+            <span class="gm-ribbon-pill__sym">${_gmEsc(sym)}</span>
+            <span class="gm-ribbon-pill__price">${_gmFmt(item.price)}</span>
+            <span class="gm-ribbon-pill__chg">${sign}${item.chg_pct.toFixed(2)}%</span>
+        </div>`;
+    });
+    ribbonEl.innerHTML = html;
+}
+
+/* ── Render a tile section ───────────────────────────────────────────────── */
+function _gmRenderSection(sectionId, containerId, data, large) {
+    const el = document.getElementById(containerId);
+    if (!el) return;
+    const sec = (data.sections || []).find(s => s.id === sectionId);
+    if (!sec) { el.innerHTML = '<span style="color:var(--text-dim);font-size:12px">No data</span>'; return; }
+    let html = '';
+    (sec.items || []).forEach(item => {
+        const up   = item.chg_pct >= 0;
+        const sign = up ? '+' : '';
+        const cls  = up ? 'gm-tile--up' : 'gm-tile--down';
+        const spark = _gmSparkSVG(item.sparkline || [], up);
+
+        const wCls  = item.week_pct  >= 0 ? 'gm-tile__stat-val--up' : 'gm-tile__stat-val--down';
+        const mCls  = item.month_pct >= 0 ? 'gm-tile__stat-val--up' : 'gm-tile__stat-val--down';
+        const yCls  = item.ytd_pct   >= 0 ? 'gm-tile__stat-val--up' : 'gm-tile__stat-val--down';
+        const wSign = item.week_pct  >= 0 ? '+' : '';
+        const mSign = item.month_pct >= 0 ? '+' : '';
+        const ySign = item.ytd_pct   >= 0 ? '+' : '';
+
+        html += `<div class="gm-tile ${cls}" onclick="gmOpenChart('${_gmEsc(item.symbol)}','${_gmEsc(item.name)}',${JSON.stringify(item.hist_dates)},${JSON.stringify(item.hist_close)})">
+            <div class="gm-tile__sym">${_gmEsc(item.symbol)}</div>
+            <div class="gm-tile__name" title="${_gmEsc(item.name)}">${_gmEsc(item.name)}</div>
+            <div class="gm-tile__price">${_gmFmt(item.price)}</div>
+            <div class="gm-tile__chg">${sign}${item.chg_pct.toFixed(2)}%</div>
+            <div class="gm-tile__spark">${spark}</div>
+            <div class="gm-tile__stats">
+                <span>1W <span class="gm-tile__stat-val ${wCls}">${wSign}${item.week_pct.toFixed(1)}%</span></span>
+                <span>1M <span class="gm-tile__stat-val ${mCls}">${mSign}${item.month_pct.toFixed(1)}%</span></span>
+                <span>YTD <span class="gm-tile__stat-val ${yCls}">${ySign}${item.ytd_pct.toFixed(1)}%</span></span>
+            </div>
+        </div>`;
+    });
+    el.innerHTML = html || '<span style="color:var(--text-dim);font-size:12px">No data available</span>';
+}
+
+/* ── Inline SVG sparkline ────────────────────────────────────────────────── */
+function _gmSparkSVG(prices, isUp) {
+    if (!prices || prices.length < 2) return '<svg width="100%" height="24"></svg>';
+    const W = 60, H = 20;
+    const mn = Math.min(...prices), mx = Math.max(...prices);
+    const rng = mx - mn || 1;
+    const pts = prices.map((v, i) => {
+        const x = (i / (prices.length - 1)) * W;
+        const y = H - ((v - mn) / rng) * H;
+        return `${x.toFixed(1)},${y.toFixed(1)}`;
+    }).join(' ');
+    const color = isUp ? '#00D478' : '#FF3348';
+    return `<svg width="100%" height="24" viewBox="0 0 ${W} ${H}" preserveAspectRatio="none">
+        <polyline points="${pts}" fill="none" stroke="${color}" stroke-width="1.5" stroke-linejoin="round" stroke-linecap="round"/>
+    </svg>`;
+}
+
+/* ── Yield curve chart ───────────────────────────────────────────────────── */
+function _gmYieldCurve(yc, canvasId, readingsId) {
+    if (!yc) return;
+    const canvas = document.getElementById(canvasId);
+    if (!canvas) return;
+    const labels   = ['3M','5Y','10Y','30Y'];
+    const values   = labels.map(m => (yc[m] ? yc[m].value : null));
+    const hasData  = values.some(v => v !== null);
+    if (!hasData) return;
+
+    // Destroy old instance keyed by canvasId
+    if (canvasId === 'gm-yc-chart'  && _gmYCChart)  { _gmYCChart.destroy();  _gmYCChart  = null; }
+    if (canvasId === 'gm-yc-chart2' && _gmYCChart2) { _gmYCChart2.destroy(); _gmYCChart2 = null; }
+
+    const ctx  = canvas.getContext('2d');
+    const inst = new Chart(ctx, {
+        type: 'line',
+        data: {
+            labels,
+            datasets: [{
+                label: 'Yield %',
+                data:  values,
+                borderColor:     '#F59E0B',
+                backgroundColor: 'rgba(245,158,11,.12)',
+                borderWidth: 2.5,
+                pointBackgroundColor: '#F59E0B',
+                pointRadius: 5,
+                pointHoverRadius: 7,
+                fill: true,
+                tension: 0.35,
+            }]
+        },
+        options: {
+            responsive: true,
+            maintainAspectRatio: false,
+            plugins: { legend: { display: false }, tooltip: {
+                callbacks: { label: ctx => ctx.parsed.y !== null ? ctx.parsed.y.toFixed(3) + '%' : 'N/A' }
+            }},
+            scales: {
+                x: { grid: { color: '#0C1428' }, ticks: { color: '#527090', font: { family: "'JetBrains Mono',monospace", size: 11 } } },
+                y: { grid: { color: '#0C1428' }, ticks: {
+                    color: '#527090', font: { family: "'JetBrains Mono',monospace", size: 10 },
+                    callback: v => v.toFixed(2) + '%'
+                }}
+            }
+        }
+    });
+    if (canvasId === 'gm-yc-chart')  _gmYCChart  = inst;
+    if (canvasId === 'gm-yc-chart2') _gmYCChart2 = inst;
+
+    // Readings chips
+    const readEl = document.getElementById(readingsId);
+    if (readEl) {
+        let html = '';
+        labels.forEach(m => {
+            if (!yc[m]) return;
+            const chg    = yc[m].chg;
+            const chgCls = chg >= 0 ? 'gm-yc-chip__chg--up' : 'gm-yc-chip__chg--down';
+            const sign   = chg >= 0 ? '+' : '';
+            html += `<div class="gm-yc-chip">
+                <span class="gm-yc-chip__mat">${m}</span>
+                <span class="gm-yc-chip__val">${yc[m].value.toFixed(3)}%</span>
+                <span class="gm-yc-chip__chg ${chgCls}">${sign}${chg.toFixed(2)}bp</span>
+            </div>`;
+        });
+        readEl.innerHTML = html;
+    }
+
+    // 2s10s proxy spread (10Y − 3M)
+    const spreadBadge = document.getElementById('gm-spread-badge');
+    if (spreadBadge && yc['10Y'] && yc['3M']) {
+        const spread = yc['10Y'].value - yc['3M'].value;
+        const inv    = spread < 0;
+        spreadBadge.textContent = (inv ? '▼ ' : '▲ ') + '10Y-3M: ' + (spread >= 0 ? '+' : '') + spread.toFixed(2) + '%';
+        spreadBadge.style.background = inv ? 'rgba(255,51,72,.15)' : 'rgba(0,212,120,.15)';
+        spreadBadge.style.color      = inv ? '#FF3348' : '#00D478';
+    }
+}
+
+/* ── Sector heatmap ──────────────────────────────────────────────────────── */
+function _gmSectorHeatmap(data, field, containerId) {
+    const el = document.getElementById(containerId);
+    if (!el) return;
+    const sec = (data.sections || []).find(s => s.id === 'sectors');
+    if (!sec) return;
+    let html = '';
+    (sec.items || []).forEach(item => {
+        const pct = item[field] != null ? item[field] : 0;
+        const bg  = `hsl(${pct > 0 ? 120 : 0}, ${Math.min(100, Math.abs(pct) * 25)}%, 18%)`;
+        const sign = pct >= 0 ? '+' : '';
+        html += `<div class="gm-sector-block" style="background:${bg}" title="${_gmEsc(item.symbol)}: ${sign}${pct.toFixed(2)}%" onclick="gmOpenChart('${_gmEsc(item.symbol)}','${_gmEsc(item.name)}',${JSON.stringify(item.hist_dates)},${JSON.stringify(item.hist_close)})">
+            <div class="gm-sector-block__name">${_gmEsc(item.name)}</div>
+            <div class="gm-sector-block__pct">${sign}${pct.toFixed(2)}%</div>
+        </div>`;
+    });
+    el.innerHTML = html || '<span style="color:var(--text-dim);font-size:12px">No sector data</span>';
+}
+
+/* ── Sector period switcher ──────────────────────────────────────────────── */
+function gmSectorPeriod(field, label, btn) {
+    document.querySelectorAll('.gm-sv-btn').forEach(b => b.classList.remove('active'));
+    if (btn) btn.classList.add('active');
+    if (_gmData) _gmSectorHeatmap(_gmData, field, 'gm-sector-heatmap2');
+}
+
+/* ── Detail chart drawer ─────────────────────────────────────────────────── */
+function gmOpenChart(symbol, name, histDates, histClose) {
+    const drawer = document.getElementById('gm-chart-drawer');
+    if (!drawer) return;
+    _gmChartData = { symbol, name, dates: histDates, closes: histClose };
+    document.getElementById('gm-chart-sym').textContent  = symbol;
+    document.getElementById('gm-chart-name').textContent = name;
+    drawer.style.display = '';
+    // Reset period buttons
+    document.querySelectorAll('.gm-cp-btn').forEach((b, i) => b.classList.toggle('active', i === 2));
+    _gmDrawDetail(180);
+    // Scroll drawer into view
+    setTimeout(() => drawer.scrollIntoView({ behavior: 'smooth', block: 'nearest' }), 80);
+}
+
+function _gmDrawDetail(days) {
+    if (!_gmChartData) return;
+    const canvas = document.getElementById('gm-detail-chart');
+    if (!canvas) return;
+    if (_gmDetailChart) { _gmDetailChart.destroy(); _gmDetailChart = null; }
+
+    const dates  = _gmChartData.dates  || [];
+    const closes = _gmChartData.closes || [];
+    const n      = dates.length;
+    const start  = Math.max(0, n - days);
+    const sliceDates  = dates.slice(start);
+    const sliceCloses = closes.slice(start);
+    const isUp = sliceCloses.length > 1 && sliceCloses[sliceCloses.length - 1] >= sliceCloses[0];
+
+    const ctx = canvas.getContext('2d');
+    const grad = ctx.createLinearGradient(0, 0, 0, 260);
+    grad.addColorStop(0,   isUp ? 'rgba(0,212,120,.25)' : 'rgba(255,51,72,.25)');
+    grad.addColorStop(1,   'rgba(0,0,0,0)');
+
+    _gmDetailChart = new Chart(ctx, {
+        type: 'line',
+        data: {
+            labels: sliceDates,
+            datasets: [{
+                label: _gmChartData.symbol,
+                data:  sliceCloses,
+                borderColor:     isUp ? '#00D478' : '#FF3348',
+                backgroundColor: grad,
+                borderWidth: 1.8,
+                pointRadius: 0,
+                pointHoverRadius: 4,
+                fill: true,
+                tension: 0.2,
+            }]
+        },
+        options: {
+            responsive: true,
+            maintainAspectRatio: false,
+            plugins: { legend: { display: false }, tooltip: {
+                mode: 'index', intersect: false,
+                callbacks: { label: c => _gmChartData.symbol + ': ' + _gmFmt(c.parsed.y) }
+            }},
+            scales: {
+                x: {
+                    grid: { color: '#0C1428' },
+                    ticks: { color: '#527090', maxTicksLimit: 8,
+                        font: { family: "'JetBrains Mono',monospace", size: 10 } }
+                },
+                y: {
+                    grid: { color: '#0C1428' },
+                    ticks: { color: '#527090', font: { family: "'JetBrains Mono',monospace", size: 10 },
+                        callback: v => _gmFmt(v) }
+                }
+            }
+        }
+    });
+}
+
+function gmChartPeriod(days, btn) {
+    document.querySelectorAll('.gm-cp-btn').forEach(b => b.classList.remove('active'));
+    if (btn) btn.classList.add('active');
+    _gmDrawDetail(days);
+}
+
+function gmCloseChart() {
+    const drawer = document.getElementById('gm-chart-drawer');
+    if (drawer) drawer.style.display = 'none';
+    if (_gmDetailChart) { _gmDetailChart.destroy(); _gmDetailChart = null; }
+    _gmChartData = null;
+}
+
+/* ── Helpers ─────────────────────────────────────────────────────────────── */
+function _gmFmt(v) {
+    if (v == null) return 'N/A';
+    const av = Math.abs(v);
+    if (av >= 10000) return v.toLocaleString('en-US', { maximumFractionDigits: 0 });
+    if (av >= 100)   return v.toFixed(2);
+    if (av >= 1)     return v.toFixed(3);
+    return v.toFixed(4);
+}
+function _gmEsc(s) {
+    return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;');
+}
+
+/* ═══════════════════════════════════════════════════════════════════════════
    ECONOMIC DATA — Series Explorer · Macro Dashboard · FRED Search
    ═══════════════════════════════════════════════════════════════════════════ */
 
@@ -4097,6 +4487,8 @@ document.addEventListener('DOMContentLoaded', ()=>{
         // Call the profile page's ready hook if it defined one
         if (typeof _onPrefsPageReady === 'function') _onPrefsPageReady();
     }
+    // Global Macro Dashboard
+    if (document.getElementById('gm-loading')) loadGM();
 });
 
 /* ═══════════════════════════════════════════════════════════════════════════
