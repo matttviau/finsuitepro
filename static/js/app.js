@@ -3308,7 +3308,7 @@ function renderEcon(){
             x0: s < xMin ? xMin : s,                        // clip left edge
             x1: e > xMax ? xMax : e,                        // clip right edge
             y0: 0, y1: 1,
-            fillcolor: 'rgba(255,255,255,0.035)',
+            fillcolor: 'rgba(255,100,60,0.13)',
             line: { width: 0 }, layer: 'below'
         })) : [];
 
