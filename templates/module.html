@@ -411,6 +411,8 @@
         <button class="period-btn" data-period="6M" onclick="setPeriod(this,'corr')">6M</button>
         <button class="period-btn active" data-period="1Y" onclick="setPeriod(this,'corr')">1Y</button>
         <button class="period-btn" data-period="2Y" onclick="setPeriod(this,'corr')">2Y</button>
+        <button class="period-btn" data-period="3Y" onclick="setPeriod(this,'corr')">3Y</button>
+        <button class="period-btn" data-period="5Y" onclick="setPeriod(this,'corr')">5Y</button>
         <button class="btn btn--primary btn--sm" onclick="runCorr()">▶ Analyse</button>
         <button class="btn btn--sm" onclick="resetCorr()"
                 style="color:var(--text-dim);border-color:var(--border);background:transparent">↺ Reset</button>
@@ -435,6 +437,9 @@
         </button>
         <button class="corr-tab" id="corr-tab-multi"   onclick="corrSwitchTab('multi')">
             <span class="corr-tab-icon">≋</span> Multivariate OLS
+        </button>
+        <button class="corr-tab corr-tab--portfolio" id="corr-tab-portfolio" onclick="corrSwitchTab('portfolio')">
+            <span class="corr-tab-icon">◈</span> Portfolio Optimizer
         </button>
         <!-- Summary badge injected by JS -->
         <div class="corr-tab-meta" id="corr-tab-meta"></div>
@@ -516,6 +521,54 @@
             <div id="corr-multi-table"></div>
         </div>
     </div>
+
+    <!-- ── TAB 4 · Portfolio Optimizer ─────────────────────────────────── -->
+    <div class="corr-panel" id="corr-panel-portfolio" style="display:none">
+
+        <!-- Loading state -->
+        <div id="port-loading" style="display:none;text-align:center;padding:32px">
+            <div class="spinner"></div>
+            <p style="margin-top:10px;color:var(--muted);font-size:.88rem">
+                Running MPT optimizer — Monte Carlo · Efficient Frontier · Scipy SLSQP…
+            </p>
+        </div>
+
+        <div id="port-results" style="display:none">
+
+            <!-- Info bar: rf rate + obs + market tag -->
+            <div class="port-infobar" id="port-infobar"></div>
+
+            <!-- Efficient Frontier Chart + CML -->
+            <div class="card port-chart-card">
+                <div class="port-chart-header">
+                    <div>
+                        <span class="corr-section-hdr" style="margin:0">Efficient Frontier &amp; Capital Market Line</span>
+                        <span class="port-chart-sub">Annualised return vs annualised volatility · <span id="port-mc-count">—</span> Monte Carlo portfolios</span>
+                    </div>
+                    <div class="port-legend" id="port-legend"></div>
+                </div>
+                <div style="position:relative;height:480px">
+                    <canvas id="port-frontier-canvas"></canvas>
+                </div>
+            </div>
+
+            <!-- Optimal Portfolios grid -->
+            <div class="port-portfolios-grid" id="port-portfolios-grid"></div>
+
+            <!-- Risk / Return table -->
+            <div class="card" style="margin-top:12px">
+                <div class="corr-section-hdr">Portfolio Comparison — Risk &amp; Return</div>
+                <div style="overflow-x:auto" id="port-comparison-table"></div>
+            </div>
+
+            <!-- Per-asset stats -->
+            <div class="card" style="margin-top:12px">
+                <div class="corr-section-hdr">Individual Asset Statistics</div>
+                <div style="overflow-x:auto" id="port-asset-table"></div>
+            </div>
+
+        </div><!-- /#port-results -->
+    </div><!-- /#corr-panel-portfolio -->
 
 </div><!-- /#corr-content -->
 

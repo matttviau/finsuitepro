@@ -4960,3 +4960,182 @@ button.econ-view-btn {
     .gm-intel-mid { grid-template-columns: 1fr; }
     .gm-intel-regime-badge { font-size: 1.2rem; }
 }
+
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   PORTFOLIO OPTIMIZER — Efficient Frontier · MPT
+   ═══════════════════════════════════════════════════════════════════════════ */
+
+/* Portfolio tab accent */
+.corr-tab--portfolio { border-color: rgba(255,176,32,0.3) !important; }
+.corr-tab--portfolio.active,
+.corr-tab--portfolio:hover { background: rgba(255,176,32,0.12) !important; color: #FFB020 !important; border-color: #FFB020 !important; }
+
+/* Info bar */
+.port-infobar {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    margin-bottom: 12px;
+    align-items: center;
+}
+.port-info-tag {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    padding: 4px 10px;
+    background: var(--card-bg);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    font-size: 0.80rem;
+    color: var(--text-sec);
+}
+.port-info-tag strong { color: var(--text-primary); }
+.port-info-tag--market { border-color: rgba(239,68,68,0.4); color: #F87171; }
+.port-info-tag--market strong { color: #F87171; }
+
+/* Chart card */
+.port-chart-card {
+    margin-bottom: 12px;
+    overflow: hidden;
+}
+.port-chart-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: flex-start;
+    flex-wrap: wrap;
+    gap: 8px;
+    margin-bottom: 14px;
+}
+.port-chart-sub {
+    display: block;
+    font-size: 0.76rem;
+    color: var(--muted);
+    margin-top: 3px;
+}
+
+/* Legend */
+.port-legend {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 10px;
+    align-items: center;
+}
+.port-legend-item {
+    display: flex;
+    align-items: center;
+    gap: 5px;
+    font-size: 0.75rem;
+    color: var(--text-sec);
+}
+.port-legend-dot {
+    width: 10px;
+    height: 10px;
+    border-radius: 50%;
+    flex-shrink: 0;
+}
+.port-legend-line {
+    width: 18px;
+    height: 2px;
+    flex-shrink: 0;
+    border-radius: 1px;
+}
+.port-legend-line--cyan { background: #00C0FF; }
+.port-legend-line--gold { background: #FFB020; }
+
+/* Portfolio cards grid */
+.port-portfolios-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+    gap: 12px;
+    margin-bottom: 12px;
+}
+.port-card { padding: 14px 16px; }
+.port-card-label {
+    font-size: 0.64rem;
+    font-weight: 700;
+    letter-spacing: 0.09em;
+    color: var(--muted);
+    margin-bottom: 10px;
+    text-transform: uppercase;
+}
+.port-card-metrics {
+    display: flex;
+    gap: 12px;
+    margin-bottom: 14px;
+    flex-wrap: wrap;
+}
+.port-card-metric {
+    display: flex;
+    flex-direction: column;
+    align-items: flex-start;
+    min-width: 52px;
+}
+.port-card-metric-val {
+    font-size: 1.15rem;
+    font-weight: 700;
+    line-height: 1.2;
+    font-variant-numeric: tabular-nums;
+}
+.port-card-metric-lbl {
+    font-size: 0.68rem;
+    color: var(--muted);
+    margin-top: 1px;
+    white-space: nowrap;
+}
+
+/* Weights inside card */
+.port-weights { display: flex; flex-direction: column; gap: 4px; }
+.port-weight-row {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 0.76rem;
+}
+.port-weight-ticker {
+    font-weight: 700;
+    font-family: var(--font-mono);
+    width: 42px;
+    flex-shrink: 0;
+    font-size: 0.74rem;
+}
+.port-weight-bar-track {
+    flex: 1;
+    height: 5px;
+    background: var(--border);
+    border-radius: 3px;
+    overflow: hidden;
+}
+.port-weight-bar-fill {
+    height: 100%;
+    border-radius: 3px;
+    transition: width 0.4s ease;
+}
+.port-weight-val {
+    width: 38px;
+    text-align: right;
+    color: var(--text-sec);
+    font-size: 0.73rem;
+    font-variant-numeric: tabular-nums;
+}
+
+/* Comparison table */
+.port-comp-table th,
+.port-comp-table td { font-size: 0.80rem !important; }
+.port-name-dot {
+    display: inline-block;
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    margin-right: 6px;
+    vertical-align: middle;
+}
+
+/* Responsive */
+@media (max-width: 900px) {
+    .port-portfolios-grid { grid-template-columns: repeat(2, 1fr); }
+    .port-chart-header    { flex-direction: column; }
+}
+@media (max-width: 600px) {
+    .port-portfolios-grid { grid-template-columns: 1fr; }
+}

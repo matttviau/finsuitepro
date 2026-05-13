@@ -3716,7 +3716,7 @@ def api_correlation():
     data = request.get_json()
     tickers = data.get('tickers', [])
     period  = data.get('period', '1Y')
-    days_map = {"6M": 180, "1Y": 365, "2Y": 730}
+    days_map = {"6M": 180, "1Y": 365, "2Y": 730, "3Y": 1095, "5Y": 1825}
     days = days_map.get(period, 365)
     if len(tickers) < 2:
         return jsonify({"error": "Need at least 2 tickers"}), 400
@@ -3843,6 +3843,191 @@ def api_correlation():
         })
     except Exception as e:
         return jsonify({"error": str(e)}), 400
+
+
+@app.route('/api/portfolio', methods=['POST'])
+@csrf.exempt
+@login_required
+def api_portfolio():
+    """
+    Modern Portfolio Theory optimizer.
+    Returns: Monte Carlo frontier · efficient frontier curve · min-variance ·
+    max-Sharpe (tangency) · equal-weight · risk-parity · market portfolio
+    (if SPY / QQQ / DIA present) · Capital Market Line · per-asset stats.
+    """
+    from scipy.optimize import minimize
+
+    MARKET_TICKERS = {'SPY', 'QQQ', 'DIA'}
+    N_MC      = 4000    # Monte Carlo portfolios
+    N_FRONT   = 60      # Efficient-frontier grid points
+
+    req      = request.get_json()
+    tickers  = [t.strip().upper() for t in req.get('tickers', []) if t.strip()]
+    period   = req.get('period', '1Y')
+    days_map = {'6M': 180, '1Y': 365, '2Y': 730, '3Y': 1095, '5Y': 1825}
+    days     = days_map.get(period, 365)
+
+    if len(tickers) < 2:
+        return jsonify({'error': 'Need at least 2 tickers'}), 400
+
+    # ── 1. Fetch risk-free rate (3-month T-bill from FRED) ────────────────
+    rf_annual = 0.045
+    try:
+        rf_rows = fred_fetch('DGS3MO', observation_start='2024-01-01')
+        if rf_rows:
+            last_rf = next((r['value'] for r in reversed(rf_rows) if r['value'] not in (None, '.')), None)
+            if last_rf is not None:
+                rf_annual = float(last_rf) / 100.0
+    except Exception:
+        pass
+    rf_daily = rf_annual / 252
+
+    # ── 2. Build aligned daily-return matrix ─────────────────────────────
+    try:
+        ret_dict = {}
+        for sym in tickers:
+            df = fetch_ohlc(sym, days=days)
+            ret_dict[sym] = df['Close'].pct_change().dropna()
+        ret_df = pd.DataFrame(ret_dict).dropna()
+    except Exception as e:
+        return jsonify({'error': str(e)}), 400
+
+    tickers = list(ret_df.columns)
+    n       = len(tickers)
+    n_obs   = len(ret_df)
+
+    mu  = ret_df.mean().values.astype(float)         # daily mean returns (n,)
+    cov = ret_df.cov().values.astype(float)           # daily cov matrix  (n,n)
+    mu_ann  = mu  * 252
+    cov_ann = cov * 252
+
+    # ── 3. Per-asset stats ────────────────────────────────────────────────
+    assets = []
+    for i, t in enumerate(tickers):
+        vol = float(np.sqrt(cov_ann[i, i]))
+        ret = float(mu_ann[i])
+        assets.append({
+            'ticker': t,
+            'vol':    round(vol * 100, 3),
+            'ret':    round(ret * 100, 3),
+            'sharpe': round((ret - rf_annual) / vol, 4) if vol > 0 else 0,
+            'is_market': t in MARKET_TICKERS,
+        })
+
+    # ── 4. Helper: portfolio metrics ──────────────────────────────────────
+    def _port_stats(w):
+        ret_p = float(w @ mu_ann)
+        vol_p = float(np.sqrt(w @ cov_ann @ w))
+        sh    = (ret_p - rf_annual) / vol_p if vol_p > 1e-9 else 0.0
+        return ret_p, vol_p, sh
+
+    def _result(w, label):
+        r, v, s = _port_stats(w)
+        return {
+            'label':   label,
+            'weights': {tickers[i]: round(float(w[i]), 6) for i in range(n)},
+            'ret':     round(r * 100, 4),
+            'vol':     round(v * 100, 4),
+            'sharpe':  round(s, 4),
+        }
+
+    # ── 5. Monte Carlo random portfolios ─────────────────────────────────
+    rng    = np.random.default_rng(42)
+    mc_pts = []
+    mc_w   = rng.dirichlet(np.ones(n), size=N_MC)
+    for w in mc_w:
+        r, v, s = _port_stats(w)
+        if np.isfinite(r) and np.isfinite(v) and v > 0:
+            mc_pts.append({'vol': round(v * 100, 3),
+                           'ret': round(r * 100, 3),
+                           'sharpe': round(s, 3)})
+
+    # ── 6. Optimization constraints & bounds ─────────────────────────────
+    constraints = [{'type': 'eq', 'fun': lambda w: np.sum(w) - 1}]
+    bounds      = [(0.0, 1.0)] * n
+    w0          = np.ones(n) / n
+
+    def _opt(objective, extra_constraints=None):
+        cons = constraints + (extra_constraints or [])
+        for x0 in [w0, rng.dirichlet(np.ones(n)), rng.dirichlet(np.ones(n))]:
+            res = minimize(objective, x0, method='SLSQP',
+                           bounds=bounds, constraints=cons,
+                           options={'ftol': 1e-10, 'maxiter': 1000})
+            if res.success:
+                return np.clip(res.x, 0, 1)
+        return w0.copy()
+
+    # Min-variance
+    w_mv   = _opt(lambda w: w @ cov_ann @ w)
+    # Max Sharpe (tangency)
+    w_ms   = _opt(lambda w: -((w @ mu_ann - rf_annual) /
+                               (np.sqrt(w @ cov_ann @ w) + 1e-12)))
+    # Equal weight
+    w_ew   = np.ones(n) / n
+    # Risk-parity: weight ∝ 1/σᵢ
+    sigmas = np.sqrt(np.diag(cov_ann))
+    w_rp   = (1.0 / np.maximum(sigmas, 1e-9))
+    w_rp  /= w_rp.sum()
+
+    portfolios = {
+        'min_variance':   _result(w_mv, 'Minimum Variance'),
+        'max_sharpe':     _result(w_ms, 'Maximum Sharpe (Tangency)'),
+        'equal_weight':   _result(w_ew, 'Equal Weight'),
+        'risk_parity':    _result(w_rp, 'Risk Parity'),
+    }
+
+    # Market portfolio if SPY/QQQ/DIA present
+    mkt_sym = next((t for t in tickers if t in MARKET_TICKERS), None)
+    if mkt_sym:
+        w_mkt = np.zeros(n)
+        w_mkt[tickers.index(mkt_sym)] = 1.0
+        portfolios['market'] = _result(w_mkt, f'Market Portfolio ({mkt_sym})')
+
+    # ── 7. Efficient frontier ─────────────────────────────────────────────
+    ret_mv  = float(w_mv @ mu_ann)
+    ret_max = float(mu_ann.max())
+    ret_min = float(mu_ann.min())
+    # Grid from min-var return to max single-asset return
+    grid_lo = min(ret_mv, ret_min)
+    grid_hi = max(ret_max * 1.05, ret_mv * 1.5)
+    targets = np.linspace(grid_lo, grid_hi, N_FRONT)
+
+    frontier = []
+    for tgt in targets:
+        extra = [{'type': 'eq', 'fun': lambda w, t=tgt: float(w @ mu_ann) - t}]
+        w_f   = _opt(lambda w: w @ cov_ann @ w, extra)
+        r, v, s = _port_stats(w_f)
+        if np.isfinite(r) and np.isfinite(v) and v > 0:
+            frontier.append({'vol': round(v * 100, 3),
+                             'ret': round(r * 100, 3),
+                             'sharpe': round(s, 3)})
+
+    # Keep only the efficient (upper) half — from min-variance point onward
+    if frontier:
+        min_vol_idx = min(range(len(frontier)), key=lambda i: frontier[i]['vol'])
+        frontier    = frontier[min_vol_idx:]
+
+    # ── 8. Capital Market Line: (0, rf) → (vol_ms, ret_ms) extended ──────
+    r_ms, v_ms, _ = _port_stats(w_ms)
+    cml_slope = (r_ms - rf_annual) / v_ms if v_ms > 0 else 0
+    cml_x_max = max(v_ms * 2.0, *(a['vol'] / 100 for a in assets))
+    cml = [
+        {'vol': 0,                          'ret': round(rf_annual * 100, 3)},
+        {'vol': round(cml_x_max * 100, 3),  'ret': round((rf_annual + cml_slope * cml_x_max) * 100, 3)},
+    ]
+
+    return jsonify({
+        'tickers':     tickers,
+        'n_assets':    n,
+        'n_obs':       n_obs,
+        'period':      period,
+        'rf_rate':     round(rf_annual * 100, 3),
+        'assets':      assets,
+        'monte_carlo': mc_pts,
+        'frontier':    frontier,
+        'portfolios':  portfolios,
+        'cml':         cml,
+    })
 
 
 @app.route('/api/global_macro')

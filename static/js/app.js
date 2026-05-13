@@ -2151,14 +2151,17 @@ function runCorr(){
 
 /* ── Tab switching ────────────────────────────────────────────────────── */
 function corrSwitchTab(tab){
-    ['matrix','scatter','multi'].forEach(t => {
-        document.getElementById(`corr-tab-${t}`).classList.toggle('active', t===tab);
-        document.getElementById(`corr-panel-${t}`).style.display = t===tab ? '' : 'none';
+    ['matrix','scatter','multi','portfolio'].forEach(t => {
+        const tabEl   = document.getElementById(`corr-tab-${t}`);
+        const panelEl = document.getElementById(`corr-panel-${t}`);
+        if(tabEl)   tabEl.classList.toggle('active', t===tab);
+        if(panelEl) panelEl.style.display = t===tab ? '' : 'none';
     });
     if(!_corrData) return;
-    if(tab==='matrix')  { renderHeatmap(_corrData); _renderDescStats(_corrData); }
-    if(tab==='scatter') { corrRenderActivePair(); }
-    if(tab==='multi')   { corrRenderMultivariate(); _renderMultiTable(_corrData); }
+    if(tab==='matrix')    { renderHeatmap(_corrData); _renderDescStats(_corrData); }
+    if(tab==='scatter')   { corrRenderActivePair(); }
+    if(tab==='multi')     { corrRenderMultivariate(); _renderMultiTable(_corrData); }
+    if(tab==='portfolio') { runPortfolio(); }
 }
 
 /* ── Tab meta badge ───────────────────────────────────────────────────── */
@@ -2649,7 +2652,9 @@ function _renderMultiTable(d){
 function resetCorr(){
     _corrData = null;
     _corrActivePair = null;
+    _portData = null;
     if(_corrChart){ _corrChart.destroy(); _corrChart=null; }
+    if(_portChart){ _portChart.destroy(); _portChart=null; }
     const content = document.getElementById('corr-content');
     if(content) content.style.display = 'none';
     const inp = document.getElementById('corr-tickers');
@@ -2660,6 +2665,353 @@ function resetCorr(){
             b.classList.toggle('active', b.dataset.period==='1Y');
     });
     _clearState('corr');
+}
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   PORTFOLIO OPTIMIZER — Modern Portfolio Theory · Efficient Frontier
+   Monte Carlo · Min-Variance · Max-Sharpe · Risk Parity · CML
+   ═══════════════════════════════════════════════════════════════════════════ */
+
+let _portData  = null;
+let _portChart = null;
+
+/* ── Portfolio colours & shapes ──────────────────────────────────────── */
+const _PORT_STYLES = {
+    min_variance: { label:'Min Variance',           color:'#3B82F6', symbol:'rect'    },
+    max_sharpe:   { label:'Max Sharpe (Tangency)',  color:'#FFB020', symbol:'star'    },
+    equal_weight: { label:'Equal Weight',           color:'#10B981', symbol:'triangle'},
+    risk_parity:  { label:'Risk Parity',            color:'#8B5CF6', symbol:'rectRot' },
+    market:       { label:'Market Portfolio',       color:'#EF4444', symbol:'circle'  },
+};
+
+/* ── Entry / fetch ───────────────────────────────────────────────────── */
+function runPortfolio(forceRefresh) {
+    if(!forceRefresh && _portData) { _renderPortfolio(_portData); return; }
+
+    const raw     = document.getElementById('corr-tickers').value;
+    const tickers = raw.split(',').map(t => t.trim().toUpperCase()).filter(Boolean);
+    if(tickers.length < 2) return;
+
+    const loading = document.getElementById('port-loading');
+    const results = document.getElementById('port-results');
+    if(loading) loading.style.display = '';
+    if(results) results.style.display = 'none';
+
+    fetch('/api/portfolio', {
+        method: 'POST',
+        headers: {'Content-Type':'application/json'},
+        body: JSON.stringify({ tickers, period: corrPeriod }),
+    })
+    .then(r => r.json())
+    .then(d => {
+        if(loading) loading.style.display = 'none';
+        if(d.error) { alert('Portfolio: ' + d.error); return; }
+        _portData = d;
+        _renderPortfolio(d);
+    })
+    .catch(e => {
+        if(loading) loading.style.display = 'none';
+        alert('Portfolio error: ' + e.message);
+    });
+}
+
+/* ── Master render ───────────────────────────────────────────────────── */
+function _renderPortfolio(d) {
+    const results = document.getElementById('port-results');
+    if(!results) return;
+
+    _renderPortInfobar(d);
+    _drawEfficientFrontier(d);
+    _renderPortfolioCards(d);
+    _renderPortComparisonTable(d);
+    _renderPortAssetTable(d);
+
+    results.style.display = '';
+}
+
+/* ── Info bar ────────────────────────────────────────────────────────── */
+function _renderPortInfobar(d) {
+    const el = document.getElementById('port-infobar');
+    if(!el) return;
+    const mkt   = d.portfolios?.market;
+    const mktTag = mkt ? `<span class="port-info-tag port-info-tag--market">🏛 Market: ${mkt.weights ? Object.keys(mkt.weights).find(k => mkt.weights[k] > 0.99) : ''}</span>` : '';
+    el.innerHTML =
+        `<span class="port-info-tag">📅 Period: <strong>${d.period}</strong></span>` +
+        `<span class="port-info-tag">📊 Assets: <strong>${d.n_assets}</strong></span>` +
+        `<span class="port-info-tag">📈 Observations: <strong>${d.n_obs}</strong></span>` +
+        `<span class="port-info-tag">💰 Risk-Free Rate: <strong>${d.rf_rate?.toFixed(2)}%</strong> (3M T-Bill)</span>` +
+        mktTag;
+}
+
+/* ── Efficient Frontier Chart ────────────────────────────────────────── */
+function _drawEfficientFrontier(d) {
+    const canvas = document.getElementById('port-frontier-canvas');
+    if(!canvas) return;
+    if(_portChart) { _portChart.destroy(); _portChart = null; }
+
+    // Sharpe colour scale for MC dots
+    const mc = d.monte_carlo || [];
+    const allSharpes = mc.map(p => p.sharpe);
+    const minS = Math.min(...allSharpes, 0);
+    const maxS = Math.max(...allSharpes, 0.01);
+    function sharpeColor(s) {
+        const t = Math.max(0, Math.min(1, (s - minS) / (maxS - minS)));
+        // blue → teal → green
+        const r = Math.round(30  + (16  - 30)  * t);
+        const g = Math.round(100 + (185 - 100) * t);
+        const b = Math.round(200 + (129 - 200) * t);
+        return `rgba(${r},${g},${b},0.35)`;
+    }
+
+    const mcCountEl = document.getElementById('port-mc-count');
+    if(mcCountEl) mcCountEl.textContent = mc.length.toLocaleString();
+
+    // Dataset 1: Monte Carlo scatter
+    const ds_mc = {
+        label: 'Random Portfolios',
+        data:  mc.map(p => ({ x: p.vol, y: p.ret, _s: p.sharpe })),
+        pointRadius: 2.5,
+        pointBackgroundColor: mc.map(p => sharpeColor(p.sharpe)),
+        pointBorderWidth: 0,
+        showLine: false,
+        type: 'scatter',
+        order: 10,
+    };
+
+    // Dataset 2: Efficient frontier line
+    const front = d.frontier || [];
+    const ds_front = {
+        label: 'Efficient Frontier',
+        data:  front.map(p => ({ x: p.vol, y: p.ret })),
+        borderColor: '#00C0FF',
+        borderWidth: 2.5,
+        pointRadius: 0,
+        showLine: true,
+        fill: false,
+        tension: 0.3,
+        type: 'scatter',
+        order: 5,
+    };
+
+    // Dataset 3: Capital Market Line
+    const cml = d.cml || [];
+    const ds_cml = {
+        label: 'Capital Market Line',
+        data:  cml.map(p => ({ x: p.vol, y: p.ret })),
+        borderColor: '#FFB020',
+        borderWidth: 1.8,
+        borderDash: [6, 4],
+        pointRadius: 0,
+        showLine: true,
+        fill: false,
+        type: 'scatter',
+        order: 4,
+    };
+
+    // Dataset 4: Individual assets
+    const assets = d.assets || [];
+    const assetColors = ['#F87171','#FB923C','#FBBF24','#A3E635','#34D399','#22D3EE','#818CF8','#F472B6','#E879F9','#94A3B8'];
+    const ds_assets = {
+        label: 'Assets',
+        data: assets.map(a => ({ x: a.vol, y: a.ret, _label: a.ticker, _sharpe: a.sharpe })),
+        pointRadius: assets.map(a => a.is_market ? 10 : 7),
+        pointBackgroundColor: assets.map((_, i) => assetColors[i % assetColors.length]),
+        pointBorderColor: '#fff',
+        pointBorderWidth: 1.5,
+        pointStyle: assets.map(a => a.is_market ? 'star' : 'circle'),
+        showLine: false,
+        type: 'scatter',
+        order: 2,
+    };
+
+    // Dataset 5+: Key portfolios
+    const ports = d.portfolios || {};
+    const portDatasets = Object.entries(ports).map(([key, p]) => {
+        const style = _PORT_STYLES[key] || { label: p.label, color: '#aaa', symbol: 'circle' };
+        return {
+            label: style.label,
+            data:  [{ x: p.vol, y: p.ret, _label: style.label, _sharpe: p.sharpe, _weights: p.weights }],
+            pointRadius: 11,
+            pointBackgroundColor: style.color,
+            pointBorderColor: '#fff',
+            pointBorderWidth: 2,
+            pointStyle: style.symbol,
+            showLine: false,
+            type: 'scatter',
+            order: 1,
+        };
+    });
+
+    // Build legend
+    const legendEl = document.getElementById('port-legend');
+    if(legendEl) {
+        let html = '';
+        Object.entries(ports).forEach(([key, p]) => {
+            const s = _PORT_STYLES[key] || { color:'#aaa', label: p.label };
+            html += `<span class="port-legend-item"><span class="port-legend-dot" style="background:${s.color}"></span>${s.label}</span>`;
+        });
+        html += `<span class="port-legend-item"><span class="port-legend-line port-legend-line--cyan"></span>Frontier</span>`;
+        html += `<span class="port-legend-item"><span class="port-legend-line port-legend-line--gold"></span>CML</span>`;
+        legendEl.innerHTML = html;
+    }
+
+    _portChart = new Chart(canvas, {
+        type: 'scatter',
+        data: { datasets: [ds_mc, ds_front, ds_cml, ds_assets, ...portDatasets] },
+        options: {
+            responsive: true, maintainAspectRatio: false,
+            animation: false,
+            plugins: {
+                legend: { display: false },
+                tooltip: {
+                    backgroundColor: 'rgba(10,12,25,0.92)',
+                    borderColor: 'rgba(0,192,255,0.25)',
+                    borderWidth: 1,
+                    callbacks: {
+                        label: ctx => {
+                            const p = ctx.raw;
+                            const lbl  = p._label  ? `${p._label}  ` : '';
+                            const shp  = p._sharpe != null ? ` | Sharpe: ${p._sharpe.toFixed(2)}` : '';
+                            return `${lbl}Vol: ${ctx.parsed.x.toFixed(2)}%  Ret: ${ctx.parsed.y.toFixed(2)}%${shp}`;
+                        },
+                        afterLabel: ctx => {
+                            const w = ctx.raw._weights;
+                            if(!w) return '';
+                            return Object.entries(w)
+                                .filter(([,v]) => v > 0.005)
+                                .sort((a,b) => b[1]-a[1])
+                                .map(([k,v]) => `  ${k}: ${(v*100).toFixed(1)}%`)
+                                .join('\n');
+                        }
+                    }
+                },
+            },
+            scales: {
+                x: {
+                    title: { display: true, text: 'Annualised Volatility (%)', color: 'var(--text-dim)', font:{size:12} },
+                    grid:  { color: 'rgba(255,255,255,0.05)' },
+                    ticks: { color: 'var(--text-dim)' },
+                },
+                y: {
+                    title: { display: true, text: 'Annualised Return (%)', color: 'var(--text-dim)', font:{size:12} },
+                    grid:  { color: 'rgba(255,255,255,0.05)' },
+                    ticks: { color: 'var(--text-dim)' },
+                },
+            },
+        },
+    });
+}
+
+/* ── Portfolio cards ────────────────────────────────────────────────── */
+function _renderPortfolioCards(d) {
+    const el = document.getElementById('port-portfolios-grid');
+    if(!el) return;
+    const ports = d.portfolios || {};
+    let html = '';
+    for(const [key, p] of Object.entries(ports)) {
+        const style  = _PORT_STYLES[key] || { color:'#aaa', label: p.label };
+        const sharpeC = p.sharpe >= 1 ? 'var(--green)' : p.sharpe >= 0.5 ? 'var(--orange)' : 'var(--text-sec)';
+        const retC    = p.ret >= 0 ? 'var(--green)' : 'var(--red)';
+
+        // Top 5 weights for this portfolio
+        const wEntries = Object.entries(p.weights || {})
+            .filter(([,v]) => v > 0.005)
+            .sort((a,b) => b[1]-a[1])
+            .slice(0, 6);
+        const maxW = wEntries.length ? wEntries[0][1] : 1;
+
+        let wHtml = wEntries.map(([t,w]) =>
+            `<div class="port-weight-row">
+                <span class="port-weight-ticker">${t}</span>
+                <div class="port-weight-bar-track">
+                    <div class="port-weight-bar-fill" style="width:${(w/maxW*100).toFixed(1)}%;background:${style.color}66"></div>
+                </div>
+                <span class="port-weight-val">${(w*100).toFixed(1)}%</span>
+            </div>`
+        ).join('');
+
+        html += `
+        <div class="card port-card" style="border-top:3px solid ${style.color}">
+            <div class="port-card-label">${style.label.toUpperCase()}</div>
+            <div class="port-card-metrics">
+                <div class="port-card-metric">
+                    <span class="port-card-metric-val" style="color:${retC}">${p.ret >= 0 ? '+' : ''}${p.ret?.toFixed(2)}%</span>
+                    <span class="port-card-metric-lbl">Ann. Return</span>
+                </div>
+                <div class="port-card-metric">
+                    <span class="port-card-metric-val">${p.vol?.toFixed(2)}%</span>
+                    <span class="port-card-metric-lbl">Volatility</span>
+                </div>
+                <div class="port-card-metric">
+                    <span class="port-card-metric-val" style="color:${sharpeC}">${p.sharpe?.toFixed(3)}</span>
+                    <span class="port-card-metric-lbl">Sharpe</span>
+                </div>
+            </div>
+            <div class="port-weights">${wHtml}</div>
+        </div>`;
+    }
+    el.innerHTML = html;
+}
+
+/* ── Comparison table ───────────────────────────────────────────────── */
+function _renderPortComparisonTable(d) {
+    const el = document.getElementById('port-comparison-table');
+    if(!el) return;
+    const ports   = d.portfolios || {};
+    const tickers = d.tickers   || [];
+
+    let html = `<table class="corr-stats-table port-comp-table">
+        <thead><tr>
+            <th>Portfolio</th><th>Ann. Return</th><th>Volatility</th><th>Sharpe</th>
+            ${tickers.map(t => `<th>${t}</th>`).join('')}
+        </tr></thead><tbody>`;
+
+    for(const [key, p] of Object.entries(ports)) {
+        const style  = _PORT_STYLES[key] || { color:'#aaa', label: p.label };
+        const retC   = p.ret  >= 0   ? 'var(--green)' : 'var(--red)';
+        const shC    = p.sharpe >= 1 ? 'var(--green)' : p.sharpe >= 0.5 ? 'var(--orange)' : 'var(--text-sec)';
+        html += `<tr>
+            <td><span class="port-name-dot" style="background:${style.color}"></span>${p.label}</td>
+            <td style="color:${retC};font-weight:700">${p.ret >= 0 ? '+' : ''}${p.ret?.toFixed(2)}%</td>
+            <td>${p.vol?.toFixed(2)}%</td>
+            <td style="color:${shC};font-weight:700">${p.sharpe?.toFixed(3)}</td>
+            ${tickers.map(t => {
+                const w = (p.weights?.[t] ?? 0) * 100;
+                const wC = w >= 20 ? 'color:var(--cyan)' : w > 5 ? '' : 'color:var(--text-dim)';
+                return `<td style="${wC}">${w > 0.4 ? w.toFixed(1)+'%' : '—'}</td>`;
+            }).join('')}
+        </tr>`;
+    }
+    html += '</tbody></table>';
+    el.innerHTML = html;
+}
+
+/* ── Asset stats table ──────────────────────────────────────────────── */
+function _renderPortAssetTable(d) {
+    const el = document.getElementById('port-asset-table');
+    if(!el) return;
+    const assets = d.assets || [];
+    let html = `<table class="corr-stats-table">
+        <thead><tr><th>Ticker</th><th>Ann. Return</th><th>Volatility</th><th>Sharpe</th><th>Risk/Return</th></tr></thead><tbody>`;
+    assets.forEach(a => {
+        const retC = a.ret >= 0 ? 'var(--green)' : 'var(--red)';
+        const shC  = a.sharpe >= 1 ? 'var(--green)' : a.sharpe >= 0.5 ? 'var(--orange)' : 'var(--text-sec)';
+        const barW = Math.min(100, Math.abs(a.ret) / Math.max(...assets.map(x => Math.abs(x.ret)), 1) * 100);
+        const isMarket = a.is_market ? ' 🏛' : '';
+        html += `<tr>
+            <td style="font-weight:700;font-family:var(--font-mono)">${a.ticker}${isMarket}</td>
+            <td style="color:${retC};font-weight:700">${a.ret >= 0 ? '+' : ''}${a.ret?.toFixed(2)}%</td>
+            <td>${a.vol?.toFixed(2)}%</td>
+            <td style="color:${shC};font-weight:700">${a.sharpe?.toFixed(3)}</td>
+            <td style="min-width:120px">
+                <div class="corr-r2-bar" style="display:inline-block;width:${barW.toFixed(0)}%;background:${a.ret>=0?'rgba(16,185,129,0.35)':'rgba(220,38,38,0.35)'}">
+                    <span style="display:none"></span>
+                </div>
+            </td>
+        </tr>`;
+    });
+    html += '</tbody></table>';
+    el.innerHTML = html;
 }
 
 /* ═══════════════════════════════════════════════════════════════════════════
