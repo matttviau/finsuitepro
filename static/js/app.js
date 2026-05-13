@@ -2755,18 +2755,20 @@ function renderGM(data) {
 
 /* ── View switcher ───────────────────────────────────────────────────────── */
 function gmSetView(view) {
-    const views = ['overview','equities','rates','cmdty','fx','sectors'];
+    const views = ['overview','equities','rates','cmdty','fx','sectors','intelligence'];
     views.forEach(v => {
         const el = document.getElementById('gm-view-' + v);
         if (el) el.style.display = (v === view) ? '' : 'none';
         const btn = document.getElementById('gm-vbtn-' + v);
         if (btn) btn.classList.toggle('active', v === view);
     });
-    // Re-render yield curve charts when switching to rates view (canvas may need resize)
     if (view === 'rates' && _gmData) {
         setTimeout(() => {
             _gmYieldCurve(_gmData.yield_curve, 'gm-yc-chart2', 'gm-yc-readings2');
         }, 50);
+    }
+    if (view === 'intelligence') {
+        loadGMIntelligence();
     }
 }
 
@@ -3037,6 +3039,298 @@ function gmCloseChart() {
     if (drawer) drawer.style.display = 'none';
     if (_gmDetailChart) { _gmDetailChart.destroy(); _gmDetailChart = null; }
     _gmChartData = null;
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+//  GLOBAL MACRO — INTELLIGENCE ENGINE
+// ═══════════════════════════════════════════════════════════════════════════
+
+let _gmIntelData    = null;   // cached intelligence API response
+let _gmChangeLog    = [];     // full change log from API
+let _gmLogFilter    = 'all';  // current log filter
+
+/* ── Load & render entry point ──────────────────────────────────────────── */
+function loadGMIntelligence(forceRefresh) {
+    const loading = document.getElementById('gm-intel-loading');
+    const results = document.getElementById('gm-intel-results');
+    const error   = document.getElementById('gm-intel-error');
+    if (!loading) return;
+
+    if (!forceRefresh && _gmIntelData) {
+        _renderIntelligence(_gmIntelData);
+        return;
+    }
+
+    loading.style.display = '';
+    if (results) results.style.display = 'none';
+    if (error)   error.style.display   = 'none';
+
+    Promise.all([
+        fetch('/api/global_macro/intelligence').then(r => r.json()),
+        fetch('/api/global_macro/changes?limit=200').then(r => r.json()),
+    ])
+    .then(([intel, changes]) => {
+        _gmIntelData = intel;
+        _gmChangeLog = changes.events || [];
+        loading.style.display = 'none';
+        if (intel.error) {
+            if (error) { error.textContent = intel.error; error.style.display = ''; }
+            return;
+        }
+        _renderIntelligence(intel);
+    })
+    .catch(err => {
+        loading.style.display = 'none';
+        if (error) { error.textContent = 'Failed to load intelligence: ' + err.message; error.style.display = ''; }
+    });
+}
+
+/* ── Master render ──────────────────────────────────────────────────────── */
+function _renderIntelligence(data) {
+    const results = document.getElementById('gm-intel-results');
+    if (!results) return;
+
+    _renderIntelRegime(data.regime);
+    _renderIntelStress(data.stress_index);
+    _renderIntelModels(data.models, data.correlation, data.ts);
+    _renderIntelNarrative(data.narrative);
+    _renderIntelAnomalies(data.anomalies || []);
+    _renderIntelSectors(data.regime?.sector_rotation || []);
+    _renderIntelForecasts(data.forecasts || []);
+    _renderIntelChangelog(_gmChangeLog.length ? _gmChangeLog : (data.new_events || []));
+
+    results.style.display = '';
+}
+
+/* ── Regime card ────────────────────────────────────────────────────────── */
+function _renderIntelRegime(regime) {
+    if (!regime) return;
+    const badge = document.getElementById('gm-intel-regime-badge');
+    const card  = document.getElementById('gm-intel-regime-card');
+    if (badge) {
+        badge.textContent = regime.regime || '—';
+        badge.style.color = regime.color || '#fff';
+        badge.style.textShadow = `0 0 20px ${regime.color || '#fff'}55`;
+    }
+    if (card) card.style.borderTop = `3px solid ${regime.color || '#fff'}`;
+
+    const vixEl  = document.getElementById('gm-intel-vix');
+    const momEl  = document.getElementById('gm-intel-eqmom');
+    const onBar  = document.getElementById('gm-intel-on-bar');
+    const offBar = document.getElementById('gm-intel-off-bar');
+    const onPct  = document.getElementById('gm-intel-on-pct');
+    const offPct = document.getElementById('gm-intel-off-pct');
+
+    if (vixEl)  vixEl.textContent  = regime.vix?.toFixed(1) ?? '—';
+    if (momEl)  momEl.textContent  = (regime.equity_momentum >= 0 ? '+' : '') + (regime.equity_momentum?.toFixed(1) ?? '—') + '%';
+    if (onBar)  onBar.style.width  = (regime.risk_on_pct  || 0) + '%';
+    if (offBar) offBar.style.width = (regime.risk_off_pct || 0) + '%';
+    if (onPct)  onPct.textContent  = (regime.risk_on_pct  || 0).toFixed(0) + '%';
+    if (offPct) offPct.textContent = (regime.risk_off_pct || 0).toFixed(0) + '%';
+}
+
+/* ── Stress index card ──────────────────────────────────────────────────── */
+function _renderIntelStress(stress) {
+    if (!stress) return;
+    const score   = stress.score ?? 50;
+    const scoreEl = document.getElementById('gm-intel-stress-score');
+    const lblEl   = document.getElementById('gm-intel-stress-regime');
+    const fillEl  = document.getElementById('gm-intel-stress-fill');
+    const bkdEl   = document.getElementById('gm-intel-stress-breakdown');
+
+    const color = score >= 80 ? '#EF4444' : score >= 65 ? '#F97316' :
+                  score >= 50 ? '#F59E0B' : score >= 35 ? '#4DA6FF' : '#10B981';
+
+    if (scoreEl) { scoreEl.textContent = score.toFixed(0) + '/100'; scoreEl.style.color = color; }
+    if (lblEl)   { lblEl.textContent   = stress.regime || '—';       lblEl.style.color   = color; }
+    if (fillEl)  { fillEl.style.width  = score + '%';                fillEl.style.background = color; }
+
+    if (bkdEl && stress.breakdown) {
+        let html = '';
+        for (const [key, v] of Object.entries(stress.breakdown)) {
+            const pct = Math.round(v.score ?? 0);
+            const c   = pct >= 65 ? '#EF4444' : pct >= 45 ? '#F59E0B' : '#10B981';
+            html += `<div class="gm-intel-bkd-row">
+                <span class="gm-intel-bkd-label">${_gmEsc(v.label || key)}</span>
+                <div class="gm-intel-bkd-track"><div class="gm-intel-bkd-fill" style="width:${pct}%;background:${c}"></div></div>
+                <span class="gm-intel-bkd-val" style="color:${c}">${pct}</span>
+            </div>`;
+        }
+        bkdEl.innerHTML = html;
+    }
+}
+
+/* ── Models / correlation card ──────────────────────────────────────────── */
+function _renderIntelModels(models, corr, ts) {
+    const listEl = document.getElementById('gm-intel-models-list');
+    if (listEl && models) {
+        const icons = { anomaly:'🔬', features:'🧠', regime:'📊', forecast:'📈', narrative:'💬' };
+        listEl.innerHTML = Object.entries(models).map(([k, v]) =>
+            `<div class="gm-intel-model-row">
+                <span class="gm-intel-model-icon">${icons[k] || '⚙️'}</span>
+                <span class="gm-intel-model-desc">${_gmEsc(v)}</span>
+            </div>`
+        ).join('');
+    }
+    const corrEl  = document.getElementById('gm-intel-corr-regime');
+    const statsEl = document.getElementById('gm-intel-corr-stats');
+    if (corrEl && corr) {
+        const spike = corr.correlation_spike;
+        corrEl.textContent = corr.regime || '—';
+        corrEl.style.color = spike ? '#EF4444' : (corr.avg_corr_30d < 0.38 ? '#10B981' : '#F59E0B');
+    }
+    if (statsEl && corr) {
+        statsEl.innerHTML = `<span>30d: <strong>${corr.avg_corr_30d ?? '—'}</strong></span>
+            <span style="margin-left:10px">90d: <strong>${corr.avg_corr_90d ?? '—'}</strong></span>
+            <span style="margin-left:10px">Δ: <strong>${corr.corr_change >= 0 ? '+' : ''}${corr.corr_change ?? '—'}</strong></span>`;
+    }
+    const tsEl = document.getElementById('gm-intel-ts');
+    if (tsEl && ts) tsEl.textContent = 'Last run: ' + ts.replace('T', ' ').replace('Z', ' UTC');
+}
+
+/* ── Narrative ──────────────────────────────────────────────────────────── */
+function _renderIntelNarrative(text) {
+    const el = document.getElementById('gm-intel-narrative');
+    if (!el || !text) return;
+    el.innerHTML = text;   // narrative contains safe HTML (generated server-side)
+}
+
+/* ── Anomaly alerts ─────────────────────────────────────────────────────── */
+function _renderIntelAnomalies(anomalies) {
+    const el = document.getElementById('gm-intel-anomalies');
+    if (!el) return;
+    if (!anomalies.length) {
+        el.innerHTML = '<p style="color:var(--muted);font-size:.85rem;padding:8px 0">No anomalies detected. All assets are within normal statistical range.</p>';
+        return;
+    }
+    el.innerHTML = anomalies.map(a => {
+        const sev   = a.severity === 'high' ? '#EF4444' : '#F59E0B';
+        const dir   = a.chg_pct >= 0 ? '▲' : '▼';
+        const dirC  = a.chg_pct >= 0 ? 'var(--green)' : 'var(--red)';
+        const score = a.anomaly_score?.toFixed(3) ?? '—';
+        return `<div class="gm-intel-anomaly-row">
+            <div style="display:flex;align-items:center;gap:8px">
+                <span class="gm-intel-sev-dot" style="background:${sev}" title="${a.severity} severity"></span>
+                <div>
+                    <span class="gm-intel-anom-sym">${_gmEsc(a.symbol)}</span>
+                    <span class="gm-intel-anom-name">${_gmEsc(a.name)}</span>
+                </div>
+            </div>
+            <div style="text-align:right">
+                <span style="color:${dirC};font-weight:600;font-size:.88rem">${dir} ${Math.abs(a.chg_pct).toFixed(2)}%</span><br>
+                <span style="color:var(--muted);font-size:.74rem">score: ${score}</span>
+            </div>
+        </div>`;
+    }).join('');
+}
+
+/* ── Sector rotation ────────────────────────────────────────────────────── */
+function _renderIntelSectors(sectors) {
+    const el = document.getElementById('gm-intel-sectors');
+    if (!el) return;
+    if (!sectors.length) { el.innerHTML = '<p style="color:var(--muted);font-size:.85rem">No sector data.</p>'; return; }
+    const max = Math.max(...sectors.map(s => Math.abs(s.score)), 0.001);
+    el.innerHTML = sectors.map((s, i) => {
+        const c   = s.score >= 0 ? '#10B981' : '#EF4444';
+        const pct = Math.abs(s.score) / max * 100;
+        const rank = i === 0 ? '🥇' : i === 1 ? '🥈' : i === 2 ? '🥉' : `${i+1}.`;
+        return `<div class="gm-intel-sector-row">
+            <span class="gm-intel-sector-rank">${rank}</span>
+            <div style="flex:1;min-width:0">
+                <div style="display:flex;justify-content:space-between;margin-bottom:3px">
+                    <span class="gm-intel-sector-name">${_gmEsc(s.name)}</span>
+                    <span style="color:${c};font-weight:600;font-size:.82rem">${s.score >= 0 ? '+' : ''}${s.score.toFixed(2)}</span>
+                </div>
+                <div class="gm-intel-sec-track">
+                    <div class="gm-intel-sec-fill" style="width:${pct}%;background:${c}"></div>
+                </div>
+                <div style="font-size:.72rem;color:var(--muted);margin-top:2px">
+                    1D ${s.day >= 0 ? '+' : ''}${s.day?.toFixed(2)}% · 1W ${s.week >= 0 ? '+' : ''}${s.week?.toFixed(2)}% · 1M ${s.month >= 0 ? '+' : ''}${s.month?.toFixed(2)}%
+                </div>
+            </div>
+        </div>`;
+    }).join('');
+}
+
+/* ── Trend forecasts ────────────────────────────────────────────────────── */
+function _renderIntelForecasts(forecasts) {
+    const el = document.getElementById('gm-intel-forecasts');
+    if (!el) return;
+    if (!forecasts.length) { el.innerHTML = '<p style="color:var(--muted);font-size:.85rem">No forecast data.</p>'; return; }
+    el.innerHTML = forecasts.map(f => {
+        const dir  = f.direction;
+        const icon = dir === 'up' ? '▲' : dir === 'down' ? '▼' : '—';
+        const c    = dir === 'up' ? 'var(--green)' : dir === 'down' ? 'var(--red)' : 'var(--muted)';
+        const conf = f.confidence ?? 50;
+        const confC = conf >= 70 ? '#10B981' : conf >= 50 ? '#F59E0B' : 'var(--muted)';
+        return `<div class="gm-intel-fc-row">
+            <div style="display:flex;align-items:center;gap:6px">
+                <span style="color:${c};font-size:1rem;font-weight:700">${icon}</span>
+                <div>
+                    <span class="gm-intel-fc-sym">${_gmEsc(f.symbol)}</span>
+                    <span class="gm-intel-fc-name">${_gmEsc(f.name)}</span>
+                </div>
+            </div>
+            <div style="text-align:right">
+                <span style="color:${confC};font-weight:600;font-size:.82rem">${conf}% conf.</span><br>
+                <span style="color:var(--muted);font-size:.72rem">R²=${f.r2?.toFixed(3)} · 5d mom ${f.mom_5d >= 0 ? '+' : ''}${f.mom_5d?.toFixed(2)}%</span>
+            </div>
+        </div>`;
+    }).join('');
+}
+
+/* ── Change log ─────────────────────────────────────────────────────────── */
+let _gmAllEvents = [];
+
+function _renderIntelChangelog(events) {
+    _gmAllEvents = events || [];
+    const countEl = document.getElementById('gm-intel-log-count');
+    if (countEl) countEl.textContent = _gmAllEvents.length + ' event' + (_gmAllEvents.length !== 1 ? 's' : '');
+    _applyIntelLogFilter();
+}
+
+function gmIntelFilterLog(filter, btn) {
+    _gmLogFilter = filter;
+    document.querySelectorAll('#gm-view-intelligence .gm-sv-btn').forEach(b => b.classList.remove('active'));
+    if (btn) btn.classList.add('active');
+    _applyIntelLogFilter();
+}
+
+function _applyIntelLogFilter() {
+    const el = document.getElementById('gm-intel-changelog');
+    if (!el) return;
+
+    let events = _gmAllEvents;
+    if (_gmLogFilter === 'high')     events = events.filter(e => e.severity === 'high');
+    else if (_gmLogFilter !== 'all') events = events.filter(e => e.type === _gmLogFilter);
+
+    if (!events.length) {
+        el.innerHTML = '<p style="color:var(--muted);font-size:.85rem;padding:8px 0">No events match the current filter.</p>';
+        return;
+    }
+
+    el.innerHTML = events.slice(0, 60).map(e => {
+        const sevC = e.severity === 'high' ? '#EF4444' : '#F59E0B';
+        const typeColors = { anomaly:'#8B5CF6', '52w_high':'#10B981', '52w_low':'#EF4444', reversal:'#F59E0B' };
+        const tc  = typeColors[e.type] || '#4DA6FF';
+        const ts  = (e.ts || '').replace('T', ' ').replace('Z', '').substring(0, 16);
+        const dir = e.chg_pct >= 0 ? 'var(--green)' : 'var(--red)';
+        return `<div class="gm-intel-log-row">
+            <div style="display:flex;align-items:flex-start;gap:8px">
+                <span class="gm-intel-log-type-badge" style="background:${tc}22;color:${tc}">${e.type?.replace('_',' ').toUpperCase()}</span>
+                <div>
+                    <span style="font-weight:600;font-size:.87rem">${_gmEsc(e.symbol)}</span>
+                    <span style="color:var(--muted);font-size:.83rem"> · ${_gmEsc(e.name)}</span>
+                    <span style="color:var(--muted);font-size:.78rem"> · ${_gmEsc(e.section)}</span><br>
+                    <span style="font-size:.83rem">${_gmEsc(e.description)}</span>
+                </div>
+            </div>
+            <div style="text-align:right;white-space:nowrap;flex-shrink:0">
+                <span style="color:${dir};font-weight:600;font-size:.85rem">${e.chg_pct >= 0 ? '+' : ''}${(e.chg_pct ?? 0).toFixed(2)}%</span><br>
+                <span style="color:var(--muted);font-size:.72rem">${ts}</span>
+            </div>
+        </div>`;
+    }).join('');
 }
 
 /* ── Helpers ─────────────────────────────────────────────────────────────── */

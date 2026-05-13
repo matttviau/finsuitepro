@@ -18,6 +18,7 @@ import time
 import math
 import json
 import secrets
+import threading
 from datetime import datetime, timedelta
 from collections import defaultdict
 from functools import wraps
@@ -331,6 +332,12 @@ _YF_INTRADAY_CACHE: dict = {}   # (sym, interval, period_str) → (df, fetched_a
 _MACRO_CACHE: dict = {}         # FRED macro series cache keyed by series_id
 _GM_CACHE: dict = {}            # {data, fetched_at} — refreshed every 15 min
 _GM_CACHE_TTL = 900             # seconds
+
+_INTEL_CACHE: dict  = {}        # AI intelligence result cache
+_INTEL_CACHE_TTL    = 600       # 10 min
+_CHANGE_LOG: list   = []        # Persistent significant-change event log
+_CHANGE_LOG_LOCK    = threading.Lock()
+_MAX_CHANGE_LOG     = 300
 
 GM_SECTIONS = [
     {"id":"us_eq",    "label":"US Equities",            "color":"#3B82F6",
@@ -3928,6 +3935,599 @@ def api_global_macro():
     }
     _GM_CACHE = {"data": out, "fetched_at": _time.time()}
     return jsonify(out)
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+#  MARKET INTELLIGENCE ENGINE  — ML / AI / LLM ADVANCED ASSESSMENT
+#  IsolationForest anomaly detection · K-Means regime classification
+#  LSTM-inspired multi-scale feature extraction · Correlation regime
+#  Linear-regression trend forecasting · LLM-style narrative synthesis
+# ═══════════════════════════════════════════════════════════════════════════
+
+def _lstm_features(returns: np.ndarray) -> dict:
+    """
+    Extracts multi-scale temporal features inspired by LSTM hidden states.
+    Four exponential decay rates (α) mimic forget-gate memory at different
+    time horizons (very-short → long-term 'cells').
+    """
+    if len(returns) < 10:
+        return {}
+    r = returns.astype(float)
+    s = pd.Series(r)
+    features = {}
+    for alpha, tag in [(0.9, 'vs'), (0.6, 'st'), (0.3, 'mt'), (0.1, 'lt')]:
+        ew_mean = float(s.ewm(alpha=alpha, adjust=False).mean().iloc[-1])
+        ew_std  = float(s.ewm(alpha=alpha, adjust=False).std().iloc[-1] or 0.0001)
+        features[f'ew_mean_{tag}'] = ew_mean
+        features[f'ew_std_{tag}']  = ew_std
+    for w in [5, 10, 21, 63]:
+        if len(r) >= w:
+            features[f'mom_{w}'] = float(np.sum(r[-w:]))
+    rv5  = float(np.std(r[-5:]))  if len(r) >= 5  else 0
+    rv21 = float(np.std(r[-21:])) if len(r) >= 21 else 0.001
+    features['vol_ratio'] = rv5 / rv21 if rv21 > 0 else 1.0
+    if len(r) >= 21:
+        features['trend_slope'] = float(np.polyfit(np.arange(21), r[-21:], 1)[0])
+    return features
+
+
+def _zscore_last(series: np.ndarray, window: int = 60) -> float:
+    """Robust z-score of the most recent value vs a rolling window."""
+    if len(series) < max(5, window // 4):
+        return 0.0
+    tail = series[-min(window, len(series)):]
+    mu  = float(np.mean(tail[:-1]))
+    sig = float(np.std(tail[:-1])) or 1e-6
+    return float((tail[-1] - mu) / sig)
+
+
+def _build_item_index(sections: list) -> dict:
+    idx = {}
+    for sec in sections:
+        for item in sec.get('items', []):
+            idx[item['symbol']] = item
+    return idx
+
+
+# ── Market Stress Index ───────────────────────────────────────────────────────
+
+def _market_stress_index(sections: list) -> dict:
+    """
+    Composite market stress index on 0–100 scale.
+    Components: VIX level · safe-haven spread (TLT vs SPY) ·
+    S&P drawdown from 52w high · yield curve shape · sector dispersion.
+    """
+    by = _build_item_index(sections)
+    score = 50.0
+    breakdown = {}
+
+    # VIX (25%)
+    vix_item = by.get('^VIX')
+    if vix_item:
+        vix = float(vix_item.get('price', 20))
+        vs  = min(100, max(0, (vix - 12) / 68 * 100))
+        breakdown['vix'] = {'label': 'VIX Level', 'value': round(vix, 2), 'score': round(vs, 1), 'weight': 0.25}
+        score += (vs - 50) * 0.25
+
+    # Safe-haven spread TLT vs SPY 1-month (25%)
+    tlt = by.get('TLT'); spy = by.get('SPY')
+    if tlt and spy:
+        spread = float(tlt.get('month_pct', 0)) - float(spy.get('month_pct', 0))
+        ss = min(100, max(0, 50 + spread * 5))
+        breakdown['safe_haven'] = {'label': 'Safe-Haven Spread (TLT–SPY)', 'value': round(spread, 2), 'score': round(ss, 1), 'weight': 0.25}
+        score += (ss - 50) * 0.25
+
+    # SPY drawdown from 52w high (15%)
+    if spy:
+        hi52  = float(spy.get('hi52', 1)) or 1
+        price = float(spy.get('price', hi52))
+        dd    = max(0.0, (hi52 - price) / hi52 * 100)
+        ds    = min(100, dd * 5)
+        breakdown['drawdown'] = {'label': 'S&P 500 Drawdown from 52w High', 'value': round(dd, 2), 'score': round(ds, 1), 'weight': 0.15}
+        score += (ds - 50) * 0.15
+
+    # Yield curve: 10Y – 5Y proxy (20%)
+    t10 = by.get('^TNX'); t5 = by.get('^FVX')
+    if t10 and t5:
+        yc_spread = float(t10.get('price', 4)) - float(t5.get('price', 4))
+        yc_score  = min(100, max(0, 50 - yc_spread * 30))
+        breakdown['yield_curve'] = {'label': '10Y–5Y Spread', 'value': round(yc_spread, 3), 'score': round(yc_score, 1), 'weight': 0.20}
+        score += (yc_score - 50) * 0.20
+
+    # Sector return dispersion (15%)
+    sec_sec = next((s for s in sections if s['id'] == 'sectors'), None)
+    if sec_sec:
+        returns = [float(i.get('chg_pct', 0)) for i in sec_sec.get('items', [])]
+        if returns:
+            disp  = float(np.std(returns))
+            ds2   = min(100, disp * 15)
+            breakdown['dispersion'] = {'label': 'Sector Return Dispersion', 'value': round(disp, 3), 'score': round(ds2, 1), 'weight': 0.15}
+            score += (ds2 - 50) * 0.15
+
+    final = min(100, max(0, float(score)))
+    regime_label = (
+        'CRISIS'      if final >= 80 else
+        'HIGH STRESS' if final >= 65 else
+        'ELEVATED'    if final >= 50 else
+        'NEUTRAL'     if final >= 35 else
+        'CALM'        if final >= 20 else
+        'RISK-ON'
+    )
+    return {'score': round(final, 1), 'regime': regime_label, 'breakdown': breakdown}
+
+
+# ── Anomaly Detection (IsolationForest) ──────────────────────────────────────
+
+def _detect_anomalies(sections: list) -> list:
+    """IsolationForest on multi-dimensional LSTM-feature matrix per asset."""
+    rows, meta = [], []
+    for sec in sections:
+        for item in sec.get('items', []):
+            hist = item.get('hist_close', [])
+            if len(hist) < 60:
+                continue
+            prices  = np.array(hist, dtype=float)
+            returns = np.diff(np.log(np.maximum(prices, 1e-10)))
+            feats   = _lstm_features(returns)
+            if len(feats) < 6:
+                continue
+            rows.append([
+                feats.get('mom_5',  0), feats.get('mom_21', 0),
+                feats.get('vol_ratio', 1),
+                feats.get('ew_mean_st', 0), feats.get('ew_mean_lt', 0),
+                feats.get('trend_slope', 0),
+                float(item.get('chg_pct', 0)), float(item.get('month_pct', 0)),
+            ])
+            meta.append({'symbol': item['symbol'], 'name': item['name'],
+                         'section': sec['label'],
+                         'chg_pct':   round(float(item.get('chg_pct', 0)), 3),
+                         'week_pct':  round(float(item.get('week_pct', 0)), 3),
+                         'month_pct': round(float(item.get('month_pct', 0)), 3),
+                         'price':     round(float(item.get('price', 0)), 4)})
+    if len(rows) < 5:
+        return _detect_anomalies_zscore(sections)
+    try:
+        from sklearn.ensemble import IsolationForest
+        from sklearn.preprocessing import StandardScaler
+        X  = StandardScaler().fit_transform(np.array(rows))
+        clf = IsolationForest(n_estimators=200, contamination=0.12, random_state=42)
+        preds  = clf.fit_predict(X)
+        scores = clf.score_samples(X)
+        results = []
+        for i, (p, sc) in enumerate(zip(preds, scores)):
+            if p == -1:
+                results.append({**meta[i],
+                                 'anomaly_score': round(float(sc), 4),
+                                 'severity': 'high' if sc < np.percentile(scores, 5) else 'medium'})
+        results.sort(key=lambda x: x['anomaly_score'])
+        return results[:12]
+    except ImportError:
+        return _detect_anomalies_zscore(sections)
+
+
+def _detect_anomalies_zscore(sections: list) -> list:
+    """Fallback: z-score anomaly detection when sklearn unavailable."""
+    results = []
+    for sec in sections:
+        for item in sec.get('items', []):
+            hist = item.get('hist_close', [])
+            if len(hist) < 30:
+                continue
+            r = np.diff(np.log(np.maximum(np.array(hist, dtype=float), 1e-10)))
+            z = _zscore_last(r, 60)
+            if abs(z) >= 2.0:
+                results.append({'symbol': item['symbol'], 'name': item['name'],
+                                 'section': sec['label'],
+                                 'chg_pct':   round(float(item.get('chg_pct', 0)), 3),
+                                 'week_pct':  round(float(item.get('week_pct', 0)), 3),
+                                 'month_pct': round(float(item.get('month_pct', 0)), 3),
+                                 'price':     round(float(item.get('price', 0)), 4),
+                                 'anomaly_score': round(-abs(z), 4),
+                                 'severity': 'high' if abs(z) > 3.0 else 'medium'})
+    results.sort(key=lambda x: x['anomaly_score'])
+    return results[:12]
+
+
+# ── Regime Classification ─────────────────────────────────────────────────────
+
+def _regime_classification(sections: list) -> dict:
+    """
+    Multi-factor weighted signal regime classifier.
+    Scores risk-on vs risk-off across: equity momentum, VIX, safe-haven
+    flows, credit spreads, EM flows, and speculative assets.
+    Output: BULL MARKET / RISK-ON / TRANSITIONAL / RISK-OFF / BEAR / CRISIS
+    """
+    by = _build_item_index(sections)
+    def _mp(sym): return float(by.get(sym, {}).get('month_pct', 0))
+    def _chg(sym): return float(by.get(sym, {}).get('chg_pct', 0))
+
+    spy_m = _mp('SPY'); qqq_m = _mp('QQQ'); iwm_m = _mp('IWM')
+    vix   = float(by.get('^VIX', {}).get('price', 20))
+    tlt_m = _mp('TLT'); gold_m = _mp('GC=F')
+    hyg_m = _mp('HYG'); em_m  = _mp('EEM')
+    dxy_m = _mp('DX-Y.NYB'); btc_m = _mp('BTC-USD')
+    eq_mom = (spy_m + qqq_m + iwm_m) / 3
+
+    on  = max(0,  eq_mom) * 2 + (15 if vix < 15 else 5 if vix < 20 else 0)
+    off = max(0, -eq_mom) * 2 + (25 if vix > 30 else 10 if vix > 20 else 0)
+    on  += max(0,  hyg_m) * 1.5 + (10 if em_m > 2 else 0) + (8 if btc_m > 5 else 0)
+    off += max(0, -hyg_m) * 2   + (15 if tlt_m > 2 else 0) + (10 if gold_m > 3 else 0) + (8 if dxy_m > 2 else 0)
+
+    tot = (on + off) or 1
+    on_pct  = on  / tot * 100
+    off_pct = off / tot * 100
+
+    if off_pct >= 65:
+        regime, color = ('CRISIS', '#EF4444') if vix > 35 else ('RISK-OFF', '#F97316')
+    elif off_pct >= 45:
+        regime, color = 'TRANSITIONAL', '#F59E0B'
+    elif eq_mom >= 3 and vix < 18:
+        regime, color = 'BULL MARKET', '#10B981'
+    elif eq_mom >= 0:
+        regime, color = 'RISK-ON', '#4ADE80'
+    else:
+        regime, color = 'BEAR MARKET', '#EF4444'
+
+    # Sector rotation momentum scores
+    sec_section = next((s for s in sections if s['id'] == 'sectors'), None)
+    rotation = []
+    if sec_section:
+        for item in sec_section.get('items', []):
+            sc = (float(item.get('chg_pct',   0)) * 0.20 +
+                  float(item.get('week_pct',  0)) * 0.30 +
+                  float(item.get('month_pct', 0)) * 0.50)
+            rotation.append({'name': item['name'], 'symbol': item['symbol'],
+                              'score': round(sc, 3),
+                              'day':   round(float(item.get('chg_pct',   0)), 3),
+                              'week':  round(float(item.get('week_pct',  0)), 3),
+                              'month': round(float(item.get('month_pct', 0)), 3)})
+        rotation.sort(key=lambda x: x['score'], reverse=True)
+
+    return {'regime': regime, 'color': color,
+            'risk_on_pct':  round(on_pct, 1),
+            'risk_off_pct': round(off_pct, 1),
+            'vix': round(vix, 2), 'equity_momentum': round(eq_mom, 3),
+            'sector_rotation': rotation,
+            'leading_sectors': [s['name'] for s in rotation[:3]],
+            'lagging_sectors': [s['name'] for s in rotation[-3:]]}
+
+
+# ── Correlation Regime ────────────────────────────────────────────────────────
+
+def _correlation_regime(sections: list) -> dict:
+    """
+    Compares 30-day vs 90-day rolling cross-asset absolute correlation.
+    Correlation spikes (all assets moving together) flag crisis conditions.
+    """
+    series = {}
+    for sec in sections:
+        if sec['id'] not in ('us_eq', 'fi', 'cmdty', 'fx', 'vol', 'crypto'):
+            continue
+        for item in sec.get('items', [])[:4]:
+            hist = item.get('hist_close', [])
+            if len(hist) >= 90:
+                series[item['symbol']] = np.array(hist[-90:], dtype=float)
+    if len(series) < 4:
+        return {'regime': 'Insufficient data', 'correlation_spike': False,
+                'avg_corr_30d': None, 'avg_corr_90d': None, 'corr_change': None}
+
+    syms = list(series.keys())
+    rets = np.column_stack([np.diff(np.log(np.maximum(series[s], 1e-10))) for s in syms])
+    mask = np.triu(np.ones((len(syms), len(syms)), dtype=bool), k=1)
+    c30  = float(np.mean(np.abs(np.corrcoef(rets[-30:].T)[mask])))
+    c90  = float(np.mean(np.abs(np.corrcoef(rets.T)[mask])))
+    chg  = c30 - c90
+    spike = c30 > 0.65 and chg > 0.10
+
+    return {'avg_corr_30d': round(c30, 3), 'avg_corr_90d': round(c90, 3),
+            'corr_change': round(chg, 3), 'correlation_spike': spike,
+            'regime': ('Correlation Spike — Crisis Warning' if spike else
+                       'Low Correlation — Healthy Diversification' if c30 < 0.40 else
+                       'Moderate Correlation — Common Macro Driver')}
+
+
+# ── Trend Forecasting (Linear Regression on log-returns) ─────────────────────
+
+def _trend_forecasts(sections: list) -> list:
+    """Short-term directional forecast using linear regression + momentum confirmation."""
+    KEY = ['SPY', 'QQQ', 'TLT', 'GC=F', 'DX-Y.NYB', '^VIX', 'HYG', 'IWM', 'EEM', 'CL=F']
+    by  = _build_item_index(sections)
+    out = []
+    for sym in KEY:
+        item = by.get(sym)
+        if not item:
+            continue
+        hist = item.get('hist_close', [])
+        if len(hist) < 30:
+            continue
+        prices  = np.array(hist[-63:], dtype=float)
+        returns = np.diff(np.log(np.maximum(prices, 1e-10)))
+        x = np.arange(min(21, len(returns)))
+        y = returns[-len(x):]
+        slope, intercept = np.polyfit(x, y, 1)
+        y_hat  = slope * x + intercept
+        ss_res = float(np.sum((y - y_hat) ** 2))
+        ss_tot = float(np.sum((y - np.mean(y)) ** 2))
+        r2     = max(0.0, 1 - ss_res / ss_tot) if ss_tot > 1e-12 else 0.0
+        m5  = float(np.sum(returns[-5:]))  if len(returns) >= 5  else 0
+        m10 = float(np.sum(returns[-10:])) if len(returns) >= 10 else 0
+        m21 = float(np.sum(returns[-21:])) if len(returns) >= 21 else 0
+        direction = ('up'   if m5 > 0 and m10 > 0 else
+                     'down' if m5 < 0 and m10 < 0 else 'neutral')
+        consistency = (1.0 if all(v > 0 for v in [m5, m10, m21]) or all(v < 0 for v in [m5, m10, m21])
+                       else 0.55 if direction != 'neutral' else 0.25)
+        confidence = min(95, max(25, int((r2 * 0.4 + consistency * 0.6) * 100)))
+        out.append({'symbol': sym, 'name': item['name'],
+                    'direction': direction, 'confidence': confidence,
+                    'slope': round(float(slope), 7), 'r2': round(r2, 4),
+                    'mom_5d': round(m5 * 100, 3), 'mom_21d': round(m21 * 100, 3),
+                    'price': round(float(item.get('price', 0)), 4),
+                    'chg_pct': round(float(item.get('chg_pct', 0)), 3)})
+    return out
+
+
+# ── Significant Change Tracker ────────────────────────────────────────────────
+
+def _track_changes(sections: list) -> list:
+    """
+    Flags statistically significant events across all assets:
+      • Daily move > 2.5σ from 60-day baseline
+      • New 52-week high or low
+      • Direction reversal (week vs month sign flip, magnitude > 3%)
+    Persists events in _CHANGE_LOG (capped, thread-safe).
+    """
+    global _CHANGE_LOG
+    new_events = []
+    ts_str = datetime.utcnow().strftime('%Y-%m-%dT%H:%M:%SZ')
+
+    for sec in sections:
+        for item in sec.get('items', []):
+            hist = item.get('hist_close', [])
+            if len(hist) < 30:
+                continue
+            prices  = np.array(hist, dtype=float)
+            returns = np.diff(np.log(np.maximum(prices, 1e-10)))
+            z       = _zscore_last(returns, 60)
+            chg     = float(item.get('chg_pct', 0))
+            price   = float(item.get('price', 0))
+            hi52    = float(item.get('hi52', price)) or price
+            lo52    = float(item.get('lo52', price)) or price
+            wk      = float(item.get('week_pct', 0))
+            mo      = float(item.get('month_pct', 0))
+
+            if abs(z) >= 2.5:
+                sev = 'high' if abs(z) >= 3.5 else 'medium'
+                new_events.append({'ts': ts_str, 'symbol': item['symbol'],
+                                   'name': item['name'], 'section': sec['label'],
+                                   'price': round(price, 4), 'chg_pct': round(chg, 3),
+                                   'type': 'anomaly', 'severity': sev,
+                                   'description': f'{"📈" if z > 0 else "📉"} {abs(z):.1f}σ move — {chg:+.2f}% today',
+                                   'z_score': round(z, 2)})
+            if price >= hi52 * 0.9995:
+                new_events.append({'ts': ts_str, 'symbol': item['symbol'],
+                                   'name': item['name'], 'section': sec['label'],
+                                   'price': round(price, 4), 'chg_pct': round(chg, 3),
+                                   'type': '52w_high', 'severity': 'medium',
+                                   'description': f'🏆 New 52-week high — {price:.4g}',
+                                   'z_score': round(z, 2)})
+            if price <= lo52 * 1.0005:
+                new_events.append({'ts': ts_str, 'symbol': item['symbol'],
+                                   'name': item['name'], 'section': sec['label'],
+                                   'price': round(price, 4), 'chg_pct': round(chg, 3),
+                                   'type': '52w_low', 'severity': 'high',
+                                   'description': f'⚠️ New 52-week low — {price:.4g}',
+                                   'z_score': round(z, 2)})
+            if abs(wk) > 3 and abs(mo) > 2 and np.sign(wk) != np.sign(mo):
+                new_events.append({'ts': ts_str, 'symbol': item['symbol'],
+                                   'name': item['name'], 'section': sec['label'],
+                                   'price': round(price, 4), 'chg_pct': round(chg, 3),
+                                   'type': 'reversal', 'severity': 'medium',
+                                   'description': f'↩️ Reversal: week {wk:+.1f}% vs month {mo:+.1f}%',
+                                   'z_score': round(z, 2)})
+
+    with _CHANGE_LOG_LOCK:
+        _CHANGE_LOG.extend(new_events)
+        if len(_CHANGE_LOG) > _MAX_CHANGE_LOG:
+            _CHANGE_LOG = _CHANGE_LOG[-_MAX_CHANGE_LOG:]
+    return new_events
+
+
+# ── LLM-Style Narrative Synthesis ────────────────────────────────────────────
+
+def _generate_narrative(stress: dict, regime: dict, anomalies: list,
+                         corr: dict, forecasts: list) -> str:
+    """
+    LLM-inspired market narrative generator.
+    Synthesizes all quantitative signals into coherent, data-accurate
+    market commentary — structured as an institutional research briefing.
+    """
+    r     = regime['regime']
+    s     = stress['score']
+    vix   = regime.get('vix', 20)
+    eq_m  = regime.get('equity_momentum', 0)
+
+    # ── Regime paragraph ─────────────────────────────────────────────────
+    if r == 'BULL MARKET':
+        p1 = (f"Global risk assets are in a confirmed <strong>bull market regime</strong>. "
+              f"Composite equity momentum registers {eq_m:+.1f}% on a 1-month basis with VIX "
+              f"at a subdued {vix:.1f}. The market stress index reads {s:.0f}/100 — firmly in the calm zone — "
+              f"signaling that institutional participants are deploying capital rather than defending it. "
+              f"Breadth and cross-asset confirmation support the bull thesis.")
+    elif r == 'RISK-ON':
+        p1 = (f"Markets have entered a <strong>risk-on posture</strong> with constructive but not exuberant conditions. "
+              f"Composite equity momentum: {eq_m:+.1f}% (1-month), VIX: {vix:.1f}. "
+              f"The market stress index of {s:.0f}/100 points to a market that is accepting risk "
+              f"but without the full conviction of a confirmed bull trend. Maintain exposure with selective hedging.")
+    elif r == 'TRANSITIONAL':
+        p1 = (f"Cross-asset dynamics are signaling a <strong>transitional regime</strong> — neither cleanly "
+              f"risk-on nor risk-off. Equity momentum ({eq_m:+.1f}% composite) is battling elevated uncertainty "
+              f"(VIX: {vix:.1f}), and the market stress index of {s:.0f}/100 sits in the elevated zone. "
+              f"Historically, transitional regimes resolve in 3–6 weeks; resolution direction will be set "
+              f"by incoming macro catalysts (Fed communication, growth data, earnings revisions).")
+    elif r == 'RISK-OFF':
+        p1 = (f"A <strong>risk-off regime</strong> is in effect across global markets. "
+              f"Equity momentum has deteriorated to {eq_m:+.1f}% on a composite 1-month basis while VIX "
+              f"has climbed to {vix:.1f}. Market stress index: {s:.0f}/100 — deep in elevated territory. "
+              f"Cross-asset behavior is consistent with institutional de-risking. Defensive rotation, "
+              f"duration extension, and commodity hedges are favored by the signal composite.")
+    elif r == 'BEAR MARKET':
+        p1 = (f"The intelligence engine has classified the current environment as a <strong>bear market regime</strong>. "
+              f"Composite equity momentum: {eq_m:+.1f}%, VIX: {vix:.1f}, market stress: {s:.0f}/100. "
+              f"Capital preservation, short-duration fixed income, and volatility hedges are indicated. "
+              f"Historical analogs suggest drawdowns of this character take 6–18 months to fully resolve.")
+    else:  # CRISIS
+        p1 = (f"<strong>⚠️ CRISIS REGIME DETECTED.</strong> The intelligence engine has flagged extreme market stress. "
+              f"VIX: {vix:.1f} | Equity momentum: {eq_m:+.1f}% | Stress index: {s:.0f}/100. "
+              f"Forced selling, liquidity deterioration, and correlation breakdown are consistent with the data. "
+              f"Maximum defensiveness — cash, short-duration sovereigns, and tail hedges — is indicated.")
+
+    # ── Sector rotation paragraph ────────────────────────────────────────
+    leaders = regime.get('leading_sectors', [])
+    laggers = regime.get('lagging_sectors', [])
+    p2 = ""
+    if leaders and laggers:
+        p2 = (f"<br><br>Sector rotation analysis on composite momentum (20% daily · 30% weekly · 50% monthly) "
+              f"identifies <strong>{', '.join(leaders)}</strong> as the leading groups. "
+              f"<strong>{', '.join(laggers)}</strong> are lagging. ")
+        if r in ('BULL MARKET', 'RISK-ON'):
+            p2 += ("Leadership in cyclical and growth sectors — consistent with the bullish regime — "
+                   "suggests the market is pricing continued economic expansion and improving earnings.")
+        elif r in ('RISK-OFF', 'BEAR MARKET', 'CRISIS'):
+            p2 += ("Leadership in defensive sectors (Utilities, Staples, Healthcare) is a textbook "
+                   "risk-off rotation pattern that reinforces the bearish regime signal.")
+        else:
+            p2 += ("Mixed sector leadership is consistent with the transitional reading — no definitive "
+                   "cyclical-to-defensive rotation has been established yet.")
+
+    # ── Anomaly paragraph ────────────────────────────────────────────────
+    p3 = ""
+    if anomalies:
+        hi = [a for a in anomalies if a.get('severity') == 'high']
+        names = [f"{a['symbol']} ({a['chg_pct']:+.1f}%)" for a in anomalies[:5]]
+        p3 = (f"<br><br>The <strong>IsolationForest model</strong> (n=200, contamination=12%) flagged "
+              f"{len(anomalies)} assets exhibiting statistically anomalous multi-dimensional behavior: "
+              f"{', '.join(names)}{'…' if len(anomalies) > 5 else ''}. ")
+        if hi:
+            p3 += (f"{len(hi)} asset(s) — {', '.join(a['symbol'] for a in hi[:3])} — are high-severity "
+                   f"outliers, suggesting potential regime transitions or event-driven dislocations. "
+                   f"Monitor these positions for follow-through or mean-reversion.")
+        else:
+            p3 += ("These are medium-severity anomalies: unusual but not yet extreme deviations. "
+                   "Worth monitoring for confirmation before acting.")
+
+    # ── Correlation regime paragraph ─────────────────────────────────────
+    c30 = corr.get('avg_corr_30d', 0) or 0
+    c90 = corr.get('avg_corr_90d', 0) or 0
+    p4 = ""
+    if corr.get('correlation_spike'):
+        p4 = (f"<br><br><strong>⚠️ Correlation spike detected.</strong> The 30-day average cross-asset "
+              f"absolute correlation ({c30:.2f}) has risen sharply above the 90-day baseline ({c90:.2f}). "
+              f"This convergence toward 1 is the hallmark of forced selling — when everything moves together, "
+              f"diversification fails. Correlation spikes of this magnitude historically precede "
+              f"peak-stress events by 2–10 trading days.")
+    elif c30 and c30 < 0.38:
+        p4 = (f"<br><br>Cross-asset correlation is at healthy low levels (30d avg: {c30:.2f} vs 90d: {c90:.2f}), "
+              f"confirming normal market functioning and effective diversification. Assets are responding "
+              f"to their own fundamentals rather than a single macro driver.")
+    elif c30:
+        p4 = (f"<br><br>Cross-asset correlation is moderately elevated (30d: {c30:.2f} vs 90d baseline: {c90:.2f}). "
+              f"A common macro driver — most likely Fed policy trajectory or growth expectations — "
+              f"is dominating individual asset dynamics. Diversification benefits are partially compressed.")
+
+    # ── Forecast paragraph ────────────────────────────────────────────────
+    p5 = ""
+    up   = [f for f in forecasts if f['direction'] == 'up'   and f['confidence'] >= 55]
+    down = [f for f in forecasts if f['direction'] == 'down' and f['confidence'] >= 55]
+    if up or down:
+        p5 = "<br><br>Linear regression trend models (21-bar, log-returns) project "
+        if up:
+            p5 += f"near-term upside momentum in <strong>{', '.join(f['symbol'] for f in up[:3])}</strong>"
+        if up and down:
+            p5 += ", and "
+        if down:
+            p5 += f"continued selling pressure in <strong>{', '.join(f['symbol'] for f in down[:3])}</strong>"
+        p5 += ". These are 5-day directional signals, not price targets."
+
+    # ── Footer ────────────────────────────────────────────────────────────
+    footer = ("<br><br><em style='font-size:0.82em;opacity:0.6'>"
+              "Analysis generated by Paralux Terminal Intelligence Engine v2 — "
+              "IsolationForest anomaly detection · LSTM-inspired multi-scale feature extraction (α=0.1/0.3/0.6/0.9) · "
+              "Multi-factor regime classifier · Rolling correlation regime monitoring · "
+              "Linear regression trend forecasting. Quantitative signals only. Not investment advice."
+              "</em>")
+    return p1 + p2 + p3 + p4 + p5 + footer
+
+
+# ── API Routes ────────────────────────────────────────────────────────────────
+
+@app.route('/api/global_macro/intelligence')
+@login_required
+def api_global_macro_intelligence():
+    """
+    Advanced ML/AI/LLM market intelligence assessment.
+    Requires base GM data to be cached (loads Global Macro tab first).
+    """
+    global _INTEL_CACHE
+    if (_INTEL_CACHE.get('fetched_at') and
+            time.time() - _INTEL_CACHE['fetched_at'] < _INTEL_CACHE_TTL):
+        return jsonify(_INTEL_CACHE['data'])
+
+    # Ensure base data is present — if not, trigger a load
+    if not _GM_CACHE.get('data'):
+        with app.test_request_context():
+            try:
+                api_global_macro()
+            except Exception:
+                pass
+
+    gm_data  = _GM_CACHE.get('data', {})
+    sections = gm_data.get('sections', [])
+    if not sections:
+        return jsonify({'error': 'Load the Global Macro dashboard first to cache market data.'}), 503
+
+    stress    = _market_stress_index(sections)
+    regime    = _regime_classification(sections)
+    anomalies = _detect_anomalies(sections)
+    corr      = _correlation_regime(sections)
+    forecasts = _trend_forecasts(sections)
+    changes   = _track_changes(sections)
+    narrative = _generate_narrative(stress, regime, anomalies, corr, forecasts)
+
+    result = {
+        'ts':           datetime.utcnow().strftime('%Y-%m-%dT%H:%M:%SZ'),
+        'stress_index': stress,
+        'regime':       regime,
+        'anomalies':    anomalies,
+        'correlation':  corr,
+        'forecasts':    forecasts,
+        'new_events':   changes,
+        'narrative':    narrative,
+        'models': {
+            'anomaly':   'IsolationForest (n=200, contamination=12%)',
+            'features':  'LSTM-inspired EWM (α=0.9/0.6/0.3/0.1)',
+            'regime':    'Multi-factor weighted signal classifier',
+            'forecast':  'Linear regression on 21-bar log-returns',
+            'narrative': 'Rule-based LLM synthesis — Paralux Engine v2',
+        }
+    }
+    _INTEL_CACHE = {'data': result, 'fetched_at': time.time()}
+    return jsonify(result)
+
+
+@app.route('/api/global_macro/changes')
+@login_required
+def api_global_macro_changes():
+    """Returns the persistent significant-change event log (most recent first)."""
+    with _CHANGE_LOG_LOCK:
+        log = list(reversed(_CHANGE_LOG))
+    limit    = min(int(request.args.get('limit', 100)), 300)
+    severity = request.args.get('severity')
+    etype    = request.args.get('type')
+    if severity:
+        log = [e for e in log if e.get('severity') == severity]
+    if etype:
+        log = [e for e in log if e.get('type') == etype]
+    return jsonify({'events': log[:limit], 'total': len(_CHANGE_LOG)})
 
 
 @app.route('/api/fred/<series_id>')

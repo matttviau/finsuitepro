@@ -550,7 +550,8 @@
             <button class="gm-view-btn"        id="gm-vbtn-rates"     onclick="gmSetView('rates')">📉 Rates</button>
             <button class="gm-view-btn"        id="gm-vbtn-cmdty"     onclick="gmSetView('cmdty')">🛢 Commodities</button>
             <button class="gm-view-btn"        id="gm-vbtn-fx"        onclick="gmSetView('fx')">💱 FX &amp; Crypto</button>
-            <button class="gm-view-btn"        id="gm-vbtn-sectors"   onclick="gmSetView('sectors')">🔲 Sectors</button>
+            <button class="gm-view-btn"        id="gm-vbtn-sectors"      onclick="gmSetView('sectors')">🔲 Sectors</button>
+            <button class="gm-view-btn gm-intel-btn" id="gm-vbtn-intelligence" onclick="gmSetView('intelligence')">🧠 Intelligence</button>
         </div>
     </div>
 
@@ -712,6 +713,121 @@
             <div class="gm-tiles gm-tiles--large" id="gm-tiles2-sectors"></div>
         </div>
     </div>
+
+    <!-- ══ INTELLIGENCE VIEW ═══════════════════════════════════════ -->
+    <div class="gm-view" id="gm-view-intelligence" style="display:none">
+
+        <div id="gm-intel-loading" style="display:none;text-align:center;padding:40px 0">
+            <div class="spinner"></div>
+            <p style="margin-top:12px;color:var(--muted);font-size:.9rem">Running ML/AI analysis pipeline…</p>
+            <p style="color:var(--muted);font-size:.78rem;margin-top:4px">IsolationForest · Regime Classifier · Correlation Engine · LLM Synthesis</p>
+        </div>
+        <div id="gm-intel-error" class="card" style="display:none;padding:20px;text-align:center;color:var(--red)"></div>
+
+        <div id="gm-intel-results" style="display:none">
+
+            <!-- Top row: Regime · Stress · Models -->
+            <div class="gm-intel-top">
+                <div class="card gm-intel-regime-card" id="gm-intel-regime-card">
+                    <div class="gm-intel-section-lbl">MARKET REGIME</div>
+                    <div class="gm-intel-regime-badge" id="gm-intel-regime-badge">—</div>
+                    <div class="gm-intel-regime-meta">
+                        <span>VIX: <strong id="gm-intel-vix">—</strong></span>
+                        <span>Eq. Mom: <strong id="gm-intel-eqmom">—</strong></span>
+                    </div>
+                    <div class="gm-intel-bar-row">
+                        <span class="gm-intel-bar-lbl">Risk-On</span>
+                        <div class="gm-intel-bar-track"><div class="gm-intel-bar-fill gm-intel-bar--on" id="gm-intel-on-bar" style="width:0%"></div></div>
+                        <span id="gm-intel-on-pct">—</span>
+                    </div>
+                    <div class="gm-intel-bar-row">
+                        <span class="gm-intel-bar-lbl">Risk-Off</span>
+                        <div class="gm-intel-bar-track"><div class="gm-intel-bar-fill gm-intel-bar--off" id="gm-intel-off-bar" style="width:0%"></div></div>
+                        <span id="gm-intel-off-pct">—</span>
+                    </div>
+                </div>
+
+                <div class="card gm-intel-stress-card">
+                    <div class="gm-intel-section-lbl">MARKET STRESS INDEX</div>
+                    <div class="gm-intel-stress-score" id="gm-intel-stress-score">—</div>
+                    <div class="gm-intel-stress-label" id="gm-intel-stress-regime">—</div>
+                    <div class="gm-intel-stress-track"><div class="gm-intel-stress-fill" id="gm-intel-stress-fill" style="width:0%"></div></div>
+                    <div class="gm-intel-stress-breakdown" id="gm-intel-stress-breakdown"></div>
+                </div>
+
+                <div class="card gm-intel-models-card">
+                    <div class="gm-intel-section-lbl">AI MODELS</div>
+                    <div class="gm-intel-models-list" id="gm-intel-models-list"></div>
+                    <div style="margin-top:12px">
+                        <div class="gm-intel-section-lbl" style="margin-bottom:5px">CORRELATION REGIME</div>
+                        <div class="gm-intel-corr-regime" id="gm-intel-corr-regime">—</div>
+                        <div class="gm-intel-corr-stats" id="gm-intel-corr-stats"></div>
+                    </div>
+                    <div style="margin-top:8px;font-size:.75rem;color:var(--muted)" id="gm-intel-ts">—</div>
+                </div>
+            </div>
+
+            <!-- Narrative -->
+            <div class="card gm-intel-narrative-card">
+                <div class="gm-card-hdr">
+                    <span style="font-size:1.1rem">🧠</span>
+                    <span class="gm-card-hdr__title">AI Market Assessment</span>
+                    <span class="gm-intel-model-tag">Paralux Intelligence Engine v2</span>
+                </div>
+                <div class="gm-intel-narrative" id="gm-intel-narrative">—</div>
+            </div>
+
+            <!-- Middle row: Anomalies · Sector Rotation · Forecasts -->
+            <div class="gm-intel-mid">
+                <div class="card">
+                    <div class="gm-card-hdr">
+                        <span class="gm-card-hdr__dot" style="background:#EF4444"></span>
+                        <span class="gm-card-hdr__title">Anomaly Alerts</span>
+                        <span class="gm-intel-model-tag" style="background:rgba(239,68,68,.12);color:#EF4444">IsolationForest</span>
+                    </div>
+                    <div id="gm-intel-anomalies"><p style="color:var(--muted);font-size:.85rem">No anomalies detected.</p></div>
+                </div>
+                <div class="card">
+                    <div class="gm-card-hdr">
+                        <span class="gm-card-hdr__dot" style="background:#10B981"></span>
+                        <span class="gm-card-hdr__title">Sector Rotation</span>
+                        <span class="gm-intel-model-tag" style="background:rgba(16,185,129,.12);color:#10B981">Momentum Rank</span>
+                    </div>
+                    <div id="gm-intel-sectors"><p style="color:var(--muted);font-size:.85rem">No data.</p></div>
+                </div>
+                <div class="card">
+                    <div class="gm-card-hdr">
+                        <span class="gm-card-hdr__dot" style="background:#8B5CF6"></span>
+                        <span class="gm-card-hdr__title">Trend Forecasts</span>
+                        <span class="gm-intel-model-tag" style="background:rgba(139,92,246,.12);color:#8B5CF6">LinReg 21-bar</span>
+                    </div>
+                    <div id="gm-intel-forecasts"><p style="color:var(--muted);font-size:.85rem">No data.</p></div>
+                </div>
+            </div>
+
+            <!-- Change Log -->
+            <div class="card">
+                <div class="gm-card-hdr" style="justify-content:space-between;flex-wrap:wrap;gap:8px">
+                    <div style="display:flex;align-items:center;gap:8px">
+                        <span class="gm-card-hdr__dot" style="background:#F59E0B"></span>
+                        <span class="gm-card-hdr__title">Significant Change Log</span>
+                        <span class="gm-intel-model-tag" style="background:rgba(245,158,11,.12);color:#F59E0B">Live Monitoring</span>
+                        <span class="gm-intel-log-count" id="gm-intel-log-count">0 events</span>
+                    </div>
+                    <div style="display:flex;gap:5px;flex-wrap:wrap">
+                        <button class="gm-sv-btn active" onclick="gmIntelFilterLog('all',this)">All</button>
+                        <button class="gm-sv-btn" onclick="gmIntelFilterLog('high',this)">🔴 High</button>
+                        <button class="gm-sv-btn" onclick="gmIntelFilterLog('anomaly',this)">⚡ Anomaly</button>
+                        <button class="gm-sv-btn" onclick="gmIntelFilterLog('52w_high',this)">🏆 52W High</button>
+                        <button class="gm-sv-btn" onclick="gmIntelFilterLog('52w_low',this)">⚠️ 52W Low</button>
+                        <button class="gm-sv-btn" onclick="gmIntelFilterLog('reversal',this)">↩️ Reversal</button>
+                    </div>
+                </div>
+                <div id="gm-intel-changelog"><p style="color:var(--muted);font-size:.85rem;padding:8px 0">No significant changes detected in the current session. Visit again after market open for live events.</p></div>
+            </div>
+
+        </div><!-- /#gm-intel-results -->
+    </div><!-- /#gm-view-intelligence -->
 
     <!-- ══ DETAIL CHART DRAWER ═══════════════════════════════════════ -->
     <div class="gm-chart-drawer" id="gm-chart-drawer" style="display:none">
