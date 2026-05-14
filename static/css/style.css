@@ -5139,3 +5139,65 @@ button.econ-view-btn {
 @media (max-width: 600px) {
     .port-portfolios-grid { grid-template-columns: 1fr; }
 }
+
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   CORRELATION — Sector Preset Buttons
+   ═══════════════════════════════════════════════════════════════════════════ */
+
+.corr-preset-row {
+    padding-top: 8px;
+    gap: 6px;
+    flex-wrap: wrap;
+    align-items: flex-start;
+    border-top: 1px solid var(--border);
+    margin-top: 4px;
+}
+
+.corr-presets-wrap {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 5px;
+    flex: 1;
+}
+
+.corr-preset-btn {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    padding: 4px 10px 4px 8px;
+    border-radius: 20px;
+    border: 1px solid rgba(255,255,255,0.1);
+    background: rgba(255,255,255,0.04);
+    color: var(--text-sec);
+    font-size: 0.76rem;
+    font-weight: 500;
+    cursor: pointer;
+    transition: background 0.15s, border-color 0.15s, color 0.15s, transform 0.1s;
+    white-space: nowrap;
+    line-height: 1;
+}
+
+.corr-preset-btn:hover {
+    background: color-mix(in srgb, var(--preset-color) 18%, transparent);
+    border-color: var(--preset-color);
+    color: var(--preset-color);
+    transform: translateY(-1px);
+}
+
+.corr-preset-btn--active {
+    background: color-mix(in srgb, var(--preset-color) 22%, transparent) !important;
+    border-color: var(--preset-color) !important;
+    color: var(--preset-color) !important;
+    font-weight: 700;
+    box-shadow: 0 0 8px color-mix(in srgb, var(--preset-color) 30%, transparent);
+}
+
+.corr-preset-icon {
+    font-size: 0.82rem;
+    line-height: 1;
+}
+
+@media (max-width: 700px) {
+    .corr-preset-btn { font-size: 0.70rem; padding: 3px 8px 3px 6px; }
+}

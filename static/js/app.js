@@ -2116,6 +2116,102 @@ function _renderStatement(d) {
    CORRELATION — Matrix · Scatter/OLS Regression · Multivariate Analysis
    ═══════════════════════════════════════════════════════════════════════════ */
 
+/* ── Sector preset definitions ───────────────────────────────────────────── */
+const CORR_PRESETS = [
+    { label:'Technology',      icon:'💻', color:'#3B82F6',
+      tickers:'XLK,QQQ,AAPL,MSFT,NVDA',
+      tip:'XLK (sector ETF), QQQ (Nasdaq), AAPL, MSFT, NVDA' },
+    { label:'Semiconductors',  icon:'⚡', color:'#00C0FF',
+      tickers:'SOXX,NVDA,AMD,QCOM,AVGO',
+      tip:'SOXX (semi ETF), NVDA, AMD, QCOM, AVGO' },
+    { label:'Financials',      icon:'🏦', color:'#10B981',
+      tickers:'XLF,JPM,BAC,GS,V',
+      tip:'XLF (sector ETF), JPM, BAC, GS, V' },
+    { label:'Energy',          icon:'🛢', color:'#F97316',
+      tickers:'XLE,XOP,XOM,CVX,COP',
+      tip:'XLE (sector ETF), XOP (E&P ETF), XOM, CVX, COP' },
+    { label:'Health Care',     icon:'🏥', color:'#EC4899',
+      tickers:'XLV,UNH,JNJ,LLY,ABBV',
+      tip:'XLV (sector ETF), UNH, JNJ, LLY, ABBV' },
+    { label:'Consumer Disc.',  icon:'🛍', color:'#F59E0B',
+      tickers:'XLY,AMZN,TSLA,HD,NKE',
+      tip:'XLY (sector ETF), AMZN, TSLA, HD, NKE' },
+    { label:'Consumer Stap.',  icon:'🛒', color:'#84CC16',
+      tickers:'XLP,WMT,PG,KO,COST',
+      tip:'XLP (sector ETF), WMT, PG, KO, COST' },
+    { label:'Industrials',     icon:'⚙️', color:'#6366F1',
+      tickers:'XLI,GE,CAT,HON,RTX',
+      tip:'XLI (sector ETF), GE, CAT, HON, RTX' },
+    { label:'Materials',       icon:'⛏', color:'#A78BFA',
+      tickers:'XLB,LIN,FCX,NEM,NUE',
+      tip:'XLB (sector ETF), LIN, FCX (copper), NEM (gold), NUE (steel)' },
+    { label:'Real Estate',     icon:'🏢', color:'#F43F5E',
+      tickers:'XLRE,VNQ,AMT,PLD,SPG',
+      tip:'XLRE + VNQ (REIT ETFs), AMT, PLD, SPG' },
+    { label:'Utilities',       icon:'💡', color:'#22D3EE',
+      tickers:'XLU,NEE,DUK,SO,AEP',
+      tip:'XLU (sector ETF), NEE, DUK, SO, AEP' },
+    { label:'Comm. Services',  icon:'📡', color:'#818CF8',
+      tickers:'XLC,META,GOOGL,NFLX,DIS',
+      tip:'XLC (sector ETF), META, GOOGL, NFLX, DIS' },
+    { label:'Broad Market',    icon:'📊', color:'#94A3B8',
+      tickers:'SPY,QQQ,IWM,DIA,VTI',
+      tip:'SPY (S&P 500), QQQ (Nasdaq 100), IWM (Russell 2000), DIA (Dow), VTI (Total Market)' },
+    { label:'Fixed Income',    icon:'🏛', color:'#60A5FA',
+      tickers:'TLT,IEF,HYG,LQD,SHY',
+      tip:'TLT (20Y Treasury), IEF (7-10Y), HYG (High Yield), LQD (IG Corp), SHY (1-3Y)' },
+    { label:'Commodities',     icon:'🥇', color:'#D97706',
+      tickers:'GLD,SLV,USO,PDBC,CPER',
+      tip:'GLD (gold), SLV (silver), USO (crude), PDBC (diversified), CPER (copper)' },
+    { label:'International',   icon:'🌍', color:'#06B6D4',
+      tickers:'EFA,EEM,VEA,EWJ,EWG',
+      tip:'EFA (developed mkts), EEM (emerging), VEA, EWJ (Japan), EWG (Germany)' },
+    { label:'Crypto',          icon:'₿',  color:'#FFB020',
+      tickers:'IBIT,MSTR,COIN,BITO,FBTC',
+      tip:'IBIT (BlackRock BTC ETF), MSTR, COIN, BITO, FBTC' },
+    { label:'Dividends',       icon:'💰', color:'#34D399',
+      tickers:'SCHD,VYM,HDV,DVY,VIG',
+      tip:'SCHD, VYM, HDV, DVY, VIG — dividend-focused ETFs' },
+];
+
+/* ── Build preset buttons on page load ───────────────────────────────────── */
+function _buildCorrPresets() {
+    const row = document.getElementById('corr-preset-row');
+    if(!row) return;
+    let html = '<span class="controls__label" style="flex-shrink:0">Presets</span><div class="corr-presets-wrap">';
+    CORR_PRESETS.forEach((p, i) => {
+        html += `<button
+            class="corr-preset-btn"
+            style="--preset-color:${p.color}"
+            title="${p.tip}"
+            onclick="corrLoadPreset(${i})">
+            <span class="corr-preset-icon">${p.icon}</span>${p.label}
+        </button>`;
+    });
+    html += '</div>';
+    row.innerHTML = html;
+}
+
+/* ── Preset click handler ─────────────────────────────────────────────────── */
+let _activePresetIdx = null;
+function corrLoadPreset(idx) {
+    const p = CORR_PRESETS[idx];
+    if(!p) return;
+
+    // Highlight the active button
+    document.querySelectorAll('.corr-preset-btn').forEach((b, i) => {
+        b.classList.toggle('corr-preset-btn--active', i === idx);
+    });
+    _activePresetIdx = idx;
+
+    // Populate input
+    const inp = document.getElementById('corr-tickers');
+    if(inp) inp.value = p.tickers;
+
+    // Auto-run
+    runCorr();
+}
+
 let _corrData      = null;   // full API response
 let _corrChart     = null;   // active Chart.js scatter instance
 let _corrActivePair = null;  // currently selected pair key
@@ -2653,6 +2749,8 @@ function resetCorr(){
     _corrData = null;
     _corrActivePair = null;
     _portData = null;
+    _activePresetIdx = null;
+    document.querySelectorAll('.corr-preset-btn').forEach(b => b.classList.remove('corr-preset-btn--active'));
     if(_corrChart){ _corrChart.destroy(); _corrChart=null; }
     if(_portChart){ _portChart.destroy(); _portChart=null; }
     const content = document.getElementById('corr-content');
@@ -5289,6 +5387,7 @@ document.addEventListener('DOMContentLoaded', ()=>{
 
     /* ── Correlation ── */
     if(document.getElementById('corr-tickers')){
+        _buildCorrPresets();   // render sector preset buttons
         const s=_loadState('corr');
         if(s?.tickers){
             document.getElementById('corr-tickers').value=s.tickers;
