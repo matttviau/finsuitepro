@@ -328,6 +328,7 @@ _FRED_SESSION = _polygon_session()
 # subsequent requests for the same ticker (different period, backtest, alerts…)
 # are served instantly from memory.
 _YF_CACHE: dict = {}
+_YF_CACHE_LOCK = threading.Lock()          # guards multi-threaded portfolio fetches
 _YF_INTRADAY_CACHE: dict = {}   # (sym, interval, period_str) → (df, fetched_at)
 _MACRO_CACHE: dict = {}         # FRED macro series cache keyed by series_id
 _GM_CACHE: dict = {}            # {data, fetched_at} — refreshed every 15 min
@@ -375,25 +376,30 @@ def fetch_ohlc(ticker: str, days: int = 730) -> pd.DataFrame:
     """
     sym = ticker.upper()
 
+    # Fast path — already cached (no lock needed for read after initial write)
     if sym not in _YF_CACHE:
-        tk = yf.Ticker(sym)
-        df_full = tk.history(period="max", auto_adjust=True, actions=False)
+        # Serialize the yfinance fetch + cache write so that parallel threads
+        # for the same symbol don't trigger duplicate network calls.
+        with _YF_CACHE_LOCK:
+            if sym not in _YF_CACHE:   # double-checked locking
+                tk = yf.Ticker(sym)
+                df_full = tk.history(period="max", auto_adjust=True, actions=False)
 
-        if df_full.empty:
-            raise ValueError(
-                f"No price data found for '{sym}'. "
-                "Check the ticker symbol — yfinance uses Yahoo Finance symbols "
-                "(e.g. BRK-B, BTC-USD, AAPL)."
-            )
+                if df_full.empty:
+                    raise ValueError(
+                        f"No price data found for '{sym}'. "
+                        "Check the ticker symbol — yfinance uses Yahoo Finance symbols "
+                        "(e.g. BRK-B, BTC-USD, AAPL)."
+                    )
 
-        # Normalise: drop timezone so index is plain date, keep OHLCV only
-        df_full.index = df_full.index.tz_localize(None) if df_full.index.tzinfo is not None \
-                        else df_full.index
-        df_full.index.name = "date"
-        df_full = df_full[["Open", "High", "Low", "Close", "Volume"]].sort_index()
-        df_full = df_full.dropna(subset=["Close"])
+                # Normalise: drop timezone so index is plain date, keep OHLCV only
+                df_full.index = df_full.index.tz_localize(None) if df_full.index.tzinfo is not None \
+                                else df_full.index
+                df_full.index.name = "date"
+                df_full = df_full[["Open", "High", "Low", "Close", "Volume"]].sort_index()
+                df_full = df_full.dropna(subset=["Close"])
 
-        _YF_CACHE[sym] = df_full
+                _YF_CACHE[sym] = df_full
 
     df_full = _YF_CACHE[sym]
 
@@ -3883,14 +3889,16 @@ def api_portfolio():
 
     n_raw = len(tickers)
 
-    # ── Dynamic scaling: reduce MC/frontier for large universes ──────────
-    # MC: 4000 for ≤20, linearly to 1500 at 100
-    N_MC    = max(1500, int(4000 - (n_raw - 20) * 25)) if n_raw > 20 else 4000
-    # Frontier: 60 for ≤20, linearly to 25 at 100
-    N_FRONT = max(25,   int(60   - (n_raw - 20) * 0.44)) if n_raw > 20 else 60
-    # SLSQP: tighter tolerance is slower — loosen for large n
-    FTOL    = 1e-8  if n_raw <= 30 else 1e-7
-    MAXITER = 800   if n_raw <= 30 else 400
+    # ── Mode selection based on universe size ────────────────────────────
+    # SMALL  (n ≤ 25): full SLSQP efficient frontier, 4000 MC
+    # MEDIUM (n ≤ 50): reduced SLSQP frontier, 3000 MC
+    # LARGE  (n > 50): skip SLSQP frontier entirely (MC-derived), 5000 MC
+    #                  SLSQP used only for min-var + max-Sharpe (2 calls)
+    LARGE_N = 50
+    N_MC    = 5000 if n_raw > LARGE_N else (3000 if n_raw > 25 else 4000)
+    N_FRONT = 40   if n_raw <= 25 else (25 if n_raw <= LARGE_N else 0)
+    FTOL    = 1e-9 if n_raw <= 25 else (1e-8 if n_raw <= LARGE_N else 1e-7)
+    MAXITER = 600  if n_raw <= 25 else (300 if n_raw <= LARGE_N else 200)
 
     # ── 1. Fetch risk-free rate (3-month T-bill from FRED) ────────────────
     rf_annual = 0.045
@@ -4013,47 +4021,48 @@ def api_portfolio():
                            'ret': round(r * 100, 3),
                            'sharpe': round(s, 3)})
 
-    # ── 7. Optimization constraints & bounds ─────────────────────────────
+    # ── 7. SLSQP optimizer (used for min-var, max-Sharpe, and frontier) ──
     constraints = [{'type': 'eq', 'fun': lambda w: float(np.sum(w)) - 1.0}]
     bounds      = [(0.0, 1.0)] * n
     w0          = np.ones(n) / n
 
-    def _opt(objective, extra_constraints=None):
-        cons = constraints + (extra_constraints or [])
+    def _opt(objective, extra_constraints=None, n_starts=2):
+        """Run SLSQP from n_starts starting points, return best feasible result."""
+        cons     = constraints + (extra_constraints or [])
+        starts   = [w0] + [rng.dirichlet(np.ones(n)) for _ in range(n_starts - 1)]
         best_res = None
-        # Try multiple starting points: equal-weight + 2 Dirichlet samples
-        for x0 in [w0, rng.dirichlet(np.ones(n)), rng.dirichlet(np.ones(n))]:
+        for x0 in starts:
             try:
                 res = minimize(objective, x0, method='SLSQP',
                                bounds=bounds, constraints=cons,
                                options={'ftol': FTOL, 'maxiter': MAXITER})
                 if res.success:
-                    return np.clip(res.x, 0, 1)
-                # Keep best failed attempt as fallback
+                    w = np.clip(res.x, 0, 1)
+                    s = w.sum()
+                    return w / s if s > 1e-9 else w
                 if best_res is None or res.fun < best_res.fun:
                     best_res = res
             except Exception:
                 pass
-        # Return best attempt even if not converged, else equal-weight
         if best_res is not None:
             w = np.clip(best_res.x, 0, 1)
             s = w.sum()
             return w / s if s > 1e-9 else w0.copy()
         return w0.copy()
 
-    # Min-variance
-    w_mv = _opt(lambda w: float(w @ cov_ann @ w))
-    # Max Sharpe (tangency) — negate Sharpe ratio
+    # Min-variance (always computed — fast for any n)
+    w_mv = _opt(lambda w: float(w @ cov_ann @ w), n_starts=2)
+
+    # Max Sharpe / tangency
     def _neg_sharpe(w):
-        vol_p = float(np.sqrt(max(float(w @ cov_ann @ w), 1e-18)))
-        return -float((w @ mu_ann - rf_annual) / vol_p)
-    w_ms = _opt(_neg_sharpe)
-    # Equal weight
-    w_ew = np.ones(n) / n
-    # Risk-parity: weight ∝ 1/σᵢ
+        v2 = max(float(w @ cov_ann @ w), 1e-18)
+        return -float((w @ mu_ann - rf_annual) / np.sqrt(v2))
+    w_ms = _opt(_neg_sharpe, n_starts=2)
+
+    # Equal weight + Risk-parity (analytical — zero optimizer calls)
+    w_ew   = np.ones(n) / n
     sigmas = np.sqrt(np.maximum(np.diag(cov_ann), 1e-18))
-    w_rp   = 1.0 / sigmas
-    w_rp  /= w_rp.sum()
+    w_rp   = (1.0 / sigmas) / (1.0 / sigmas).sum()
 
     portfolios = {
         'min_variance': _result(w_mv, 'Minimum Variance'),
@@ -4070,27 +4079,52 @@ def api_portfolio():
         portfolios['market'] = _result(w_mkt, f'Market Portfolio ({mkt_sym})')
 
     # ── 8. Efficient frontier ─────────────────────────────────────────────
-    ret_mv  = float(w_mv @ mu_ann)
-    ret_max = float(mu_ann.max())
-    ret_min = float(mu_ann.min())
-    grid_lo = min(ret_mv, ret_min)
-    grid_hi = max(ret_max * 1.05, ret_mv * 1.5)
-    targets = np.linspace(grid_lo, grid_hi, N_FRONT)
-
+    # SMALL/MEDIUM: full SLSQP constrained optimization per return target.
+    # LARGE (n > 50): MC-derived frontier — bin MC points by volatility,
+    #   pick the max-return point per bin.  Zero extra optimizer calls,
+    #   gives a smooth empirical frontier in <1 ms.
     frontier = []
-    for tgt in targets:
-        extra = [{'type': 'eq', 'fun': lambda w, t=tgt: float(w @ mu_ann) - t}]
-        w_f   = _opt(lambda w: float(w @ cov_ann @ w), extra)
-        r, v, s = _port_stats(w_f)
-        if np.isfinite(r) and np.isfinite(v) and v > 0:
-            frontier.append({'vol': round(v * 100, 3),
-                             'ret': round(r * 100, 3),
-                             'sharpe': round(s, 3)})
 
-    # Keep only the efficient (upper) half — from min-variance point onward
-    if frontier:
-        min_vol_idx = min(range(len(frontier)), key=lambda i: frontier[i]['vol'])
-        frontier    = frontier[min_vol_idx:]
+    if N_FRONT > 0:
+        # SLSQP frontier
+        ret_mv  = float(w_mv @ mu_ann)
+        ret_max = float(mu_ann.max())
+        ret_min = float(mu_ann.min())
+        grid_lo = min(ret_mv, ret_min)
+        grid_hi = max(ret_max * 1.05, ret_mv * 1.5)
+        for tgt in np.linspace(grid_lo, grid_hi, N_FRONT):
+            extra = [{'type': 'eq', 'fun': lambda w, t=tgt: float(w @ mu_ann) - t}]
+            w_f   = _opt(lambda w: float(w @ cov_ann @ w), extra, n_starts=1)
+            r, v, s = _port_stats(w_f)
+            if np.isfinite(r) and np.isfinite(v) and v > 0:
+                frontier.append({'vol': round(v * 100, 3),
+                                 'ret': round(r * 100, 3),
+                                 'sharpe': round(s, 3)})
+        if frontier:
+            min_vol_idx = min(range(len(frontier)), key=lambda i: frontier[i]['vol'])
+            frontier    = frontier[min_vol_idx:]
+    else:
+        # MC-derived frontier: bin by vol, keep max-return point per bin
+        if mc_pts:
+            vols  = np.array([p['vol'] for p in mc_pts])
+            rets  = np.array([p['ret'] for p in mc_pts])
+            shs   = np.array([p['sharpe'] for p in mc_pts])
+            v_lo, v_hi = vols.min(), vols.max()
+            n_bins = 40
+            edges  = np.linspace(v_lo, v_hi, n_bins + 1)
+            for i in range(n_bins):
+                mask = (vols >= edges[i]) & (vols < edges[i + 1])
+                if not mask.any():
+                    continue
+                best = int(np.argmax(rets[mask]))
+                idx  = np.where(mask)[0][best]
+                frontier.append({'vol': round(float(vols[idx]), 3),
+                                 'ret': round(float(rets[idx]), 3),
+                                 'sharpe': round(float(shs[idx]), 3)})
+            # Prune to the efficient (upper) half
+            if frontier:
+                mv_vol = float(np.sqrt(max(w_mv @ cov_ann @ w_mv, 0))) * 100
+                frontier = [p for p in frontier if p['vol'] >= mv_vol * 0.90]
 
     # ── 9. Capital Market Line: rf → tangency portfolio, extended ─────────
     r_ms, v_ms, _ = _port_stats(w_ms)
