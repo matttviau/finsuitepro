@@ -2172,6 +2172,9 @@ const CORR_PRESETS = [
     { label:'Dividends',       icon:'💰', color:'#34D399',
       tickers:'SCHD,VYM,HDV,DVY,VIG',
       tip:'SCHD, VYM, HDV, DVY, VIG — dividend-focused ETFs' },
+    { label:'Combined Portfolio', icon:'🌐', color:'#FFFFFF',
+      tickers:'__combined__',
+      tip:'Every unique ticker across all sector presets — full cross-asset universe' },
 ];
 
 /* ── Build preset buttons on page load ───────────────────────────────────── */
@@ -2204,9 +2207,20 @@ function corrLoadPreset(idx) {
     });
     _activePresetIdx = idx;
 
+    // Resolve tickers — combined preset collects all unique symbols dynamically
+    let tickerStr = p.tickers;
+    if(tickerStr === '__combined__') {
+        const seen = new Set();
+        CORR_PRESETS.forEach(preset => {
+            if(preset.tickers && preset.tickers !== '__combined__')
+                preset.tickers.split(',').forEach(t => seen.add(t.trim()));
+        });
+        tickerStr = Array.from(seen).join(',');
+    }
+
     // Populate input
     const inp = document.getElementById('corr-tickers');
-    if(inp) inp.value = p.tickers;
+    if(inp) inp.value = tickerStr;
 
     // Auto-run
     runCorr();
