@@ -3924,18 +3924,31 @@ def api_portfolio():
     if len(ret_dict) < 2:
         return jsonify({'error': 'Could not fetch enough price data. Check ticker symbols.'}), 400
 
-    # Align: require each column to have data for ≥70 % of the date range
-    raw_df   = pd.DataFrame(ret_dict)
-    thresh   = max(2, int(len(raw_df) * 0.70))
-    raw_df   = raw_df.dropna(thresh=thresh)   # drop rows where <thresh tickers have data
-    # Drop tickers still missing >30 % of rows after alignment
-    col_mask = raw_df.isnull().mean() < 0.30
-    raw_df   = raw_df.loc[:, col_mask]
-    # Forward-fill the remaining gaps (holidays, IPO gaps)
-    ret_df   = raw_df.ffill().dropna()
+    # ── Align return matrix ───────────────────────────────────────────────
+    # Build union index, then fill gaps — this preserves ALL dates rather
+    # than dropping rows just because a few tickers are missing that day.
+    raw_df = pd.DataFrame(ret_dict)          # shape: (trading_days, n_tickers)
 
-    if ret_df.shape[0] < 30 or ret_df.shape[1] < 2:
-        return jsonify({'error': 'Insufficient aligned return history — try a shorter period.'}), 400
+    # 1. Drop tickers that are almost entirely missing (>50 % NaN).
+    #    This removes truly bad/delisted symbols without touching the rows.
+    col_mask = raw_df.isnull().mean() <= 0.50
+    raw_df   = raw_df.loc[:, col_mask]
+
+    if raw_df.shape[1] < 2:
+        return jsonify({'error': 'Could not fetch enough price data. Check ticker symbols.'}), 400
+
+    # 2. Forward-fill then backward-fill small gaps (holidays, IPO offsets).
+    ret_df = raw_df.ffill().bfill()
+
+    # 3. Drop any rows that are still all-NaN (shouldn't happen after bfill,
+    #    but safety net in case the very first row is empty).
+    ret_df = ret_df.dropna(how='all')
+
+    # 4. For rows with only a few remaining NaN entries, fill with column mean.
+    ret_df = ret_df.fillna(ret_df.mean())
+
+    if ret_df.shape[0] < 20 or ret_df.shape[1] < 2:
+        return jsonify({'error': 'Insufficient return history — try a different period.'}), 400
 
     tickers = list(ret_df.columns)
     n       = len(tickers)
