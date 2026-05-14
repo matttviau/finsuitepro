@@ -3854,12 +3854,19 @@ def api_portfolio():
     Returns: Monte Carlo frontier · efficient frontier curve · min-variance ·
     max-Sharpe (tangency) · equal-weight · risk-parity · market portfolio
     (if SPY / QQQ / DIA present) · Capital Market Line · per-asset stats.
+
+    Scales gracefully to large universes (80+ tickers) via:
+      - Parallel yfinance fetches (ThreadPoolExecutor)
+      - Ledoit-Wolf covariance shrinkage (sklearn) for n > 15
+      - Dynamic N_MC / N_FRONT reduction for large n
+      - Looser SLSQP tolerances for large n
+      - Robust dropna threshold + forward-fill alignment
     """
     from scipy.optimize import minimize
+    from concurrent.futures import ThreadPoolExecutor, as_completed
 
     MARKET_TICKERS = {'SPY', 'QQQ', 'DIA'}
-    N_MC      = 4000    # Monte Carlo portfolios
-    N_FRONT   = 60      # Efficient-frontier grid points
+    MAX_TICKERS    = 100   # hard safety cap
 
     req      = request.get_json()
     tickers  = [t.strip().upper() for t in req.get('tickers', []) if t.strip()]
@@ -3869,6 +3876,21 @@ def api_portfolio():
 
     if len(tickers) < 2:
         return jsonify({'error': 'Need at least 2 tickers'}), 400
+
+    # Silently cap at MAX_TICKERS
+    if len(tickers) > MAX_TICKERS:
+        tickers = tickers[:MAX_TICKERS]
+
+    n_raw = len(tickers)
+
+    # ── Dynamic scaling: reduce MC/frontier for large universes ──────────
+    # MC: 4000 for ≤20, linearly to 1500 at 100
+    N_MC    = max(1500, int(4000 - (n_raw - 20) * 25)) if n_raw > 20 else 4000
+    # Frontier: 60 for ≤20, linearly to 25 at 100
+    N_FRONT = max(25,   int(60   - (n_raw - 20) * 0.44)) if n_raw > 20 else 60
+    # SLSQP: tighter tolerance is slower — loosen for large n
+    FTOL    = 1e-8  if n_raw <= 30 else 1e-7
+    MAXITER = 800   if n_raw <= 30 else 400
 
     # ── 1. Fetch risk-free rate (3-month T-bill from FRED) ────────────────
     rf_annual = 0.045
@@ -3882,42 +3904,78 @@ def api_portfolio():
         pass
     rf_daily = rf_annual / 252
 
-    # ── 2. Build aligned daily-return matrix ─────────────────────────────
-    try:
-        ret_dict = {}
-        for sym in tickers:
+    # ── 2. Parallel daily-return fetch ───────────────────────────────────
+    def _fetch_ret(sym):
+        try:
             df = fetch_ohlc(sym, days=days)
-            ret_dict[sym] = df['Close'].pct_change().dropna()
-        ret_df = pd.DataFrame(ret_dict).dropna()
-    except Exception as e:
-        return jsonify({'error': str(e)}), 400
+            series = df['Close'].pct_change().dropna()
+            if len(series) >= 30:
+                return sym, series
+        except Exception:
+            pass
+        return sym, None
+
+    ret_dict = {}
+    with ThreadPoolExecutor(max_workers=min(n_raw, 16)) as ex:
+        for sym, series in ex.map(_fetch_ret, tickers):
+            if series is not None:
+                ret_dict[sym] = series
+
+    if len(ret_dict) < 2:
+        return jsonify({'error': 'Could not fetch enough price data. Check ticker symbols.'}), 400
+
+    # Align: require each column to have data for ≥70 % of the date range
+    raw_df   = pd.DataFrame(ret_dict)
+    thresh   = max(2, int(len(raw_df) * 0.70))
+    raw_df   = raw_df.dropna(thresh=thresh)   # drop rows where <thresh tickers have data
+    # Drop tickers still missing >30 % of rows after alignment
+    col_mask = raw_df.isnull().mean() < 0.30
+    raw_df   = raw_df.loc[:, col_mask]
+    # Forward-fill the remaining gaps (holidays, IPO gaps)
+    ret_df   = raw_df.ffill().dropna()
+
+    if ret_df.shape[0] < 30 or ret_df.shape[1] < 2:
+        return jsonify({'error': 'Insufficient aligned return history — try a shorter period.'}), 400
 
     tickers = list(ret_df.columns)
     n       = len(tickers)
     n_obs   = len(ret_df)
 
-    mu  = ret_df.mean().values.astype(float)         # daily mean returns (n,)
-    cov = ret_df.cov().values.astype(float)           # daily cov matrix  (n,n)
+    mu  = ret_df.mean().values.astype(float)
+    cov = ret_df.cov().values.astype(float)
     mu_ann  = mu  * 252
     cov_ann = cov * 252
 
-    # ── 3. Per-asset stats ────────────────────────────────────────────────
+    # ── 3. Ledoit-Wolf shrinkage for large / correlated universes ─────────
+    #  Prevents near-singular covariance matrix causing SLSQP to fail
+    if n > 15:
+        try:
+            from sklearn.covariance import ledoit_wolf
+            lw_cov, _ = ledoit_wolf(ret_df.values)
+            cov_ann   = lw_cov * 252
+        except Exception:
+            pass  # fall back to sample covariance
+
+    # Small Tikhonov regularization as final safety net
+    cov_ann += np.eye(n) * 1e-8
+
+    # ── 4. Per-asset stats ────────────────────────────────────────────────
     assets = []
     for i, t in enumerate(tickers):
-        vol = float(np.sqrt(cov_ann[i, i]))
+        vol = float(np.sqrt(max(cov_ann[i, i], 0)))
         ret = float(mu_ann[i])
         assets.append({
-            'ticker': t,
-            'vol':    round(vol * 100, 3),
-            'ret':    round(ret * 100, 3),
-            'sharpe': round((ret - rf_annual) / vol, 4) if vol > 0 else 0,
+            'ticker':    t,
+            'vol':       round(vol * 100, 3),
+            'ret':       round(ret * 100, 3),
+            'sharpe':    round((ret - rf_annual) / vol, 4) if vol > 1e-9 else 0,
             'is_market': t in MARKET_TICKERS,
         })
 
-    # ── 4. Helper: portfolio metrics ──────────────────────────────────────
+    # ── 5. Helper: portfolio metrics ──────────────────────────────────────
     def _port_stats(w):
         ret_p = float(w @ mu_ann)
-        vol_p = float(np.sqrt(w @ cov_ann @ w))
+        vol_p = float(np.sqrt(max(w @ cov_ann @ w, 0)))
         sh    = (ret_p - rf_annual) / vol_p if vol_p > 1e-9 else 0.0
         return ret_p, vol_p, sh
 
@@ -3931,7 +3989,7 @@ def api_portfolio():
             'sharpe':  round(s, 4),
         }
 
-    # ── 5. Monte Carlo random portfolios ─────────────────────────────────
+    # ── 6. Monte Carlo random portfolios ─────────────────────────────────
     rng    = np.random.default_rng(42)
     mc_pts = []
     mc_w   = rng.dirichlet(np.ones(n), size=N_MC)
@@ -3942,38 +4000,53 @@ def api_portfolio():
                            'ret': round(r * 100, 3),
                            'sharpe': round(s, 3)})
 
-    # ── 6. Optimization constraints & bounds ─────────────────────────────
-    constraints = [{'type': 'eq', 'fun': lambda w: np.sum(w) - 1}]
+    # ── 7. Optimization constraints & bounds ─────────────────────────────
+    constraints = [{'type': 'eq', 'fun': lambda w: float(np.sum(w)) - 1.0}]
     bounds      = [(0.0, 1.0)] * n
     w0          = np.ones(n) / n
 
     def _opt(objective, extra_constraints=None):
         cons = constraints + (extra_constraints or [])
+        best_res = None
+        # Try multiple starting points: equal-weight + 2 Dirichlet samples
         for x0 in [w0, rng.dirichlet(np.ones(n)), rng.dirichlet(np.ones(n))]:
-            res = minimize(objective, x0, method='SLSQP',
-                           bounds=bounds, constraints=cons,
-                           options={'ftol': 1e-10, 'maxiter': 1000})
-            if res.success:
-                return np.clip(res.x, 0, 1)
+            try:
+                res = minimize(objective, x0, method='SLSQP',
+                               bounds=bounds, constraints=cons,
+                               options={'ftol': FTOL, 'maxiter': MAXITER})
+                if res.success:
+                    return np.clip(res.x, 0, 1)
+                # Keep best failed attempt as fallback
+                if best_res is None or res.fun < best_res.fun:
+                    best_res = res
+            except Exception:
+                pass
+        # Return best attempt even if not converged, else equal-weight
+        if best_res is not None:
+            w = np.clip(best_res.x, 0, 1)
+            s = w.sum()
+            return w / s if s > 1e-9 else w0.copy()
         return w0.copy()
 
     # Min-variance
-    w_mv   = _opt(lambda w: w @ cov_ann @ w)
-    # Max Sharpe (tangency)
-    w_ms   = _opt(lambda w: -((w @ mu_ann - rf_annual) /
-                               (np.sqrt(w @ cov_ann @ w) + 1e-12)))
+    w_mv = _opt(lambda w: float(w @ cov_ann @ w))
+    # Max Sharpe (tangency) — negate Sharpe ratio
+    def _neg_sharpe(w):
+        vol_p = float(np.sqrt(max(float(w @ cov_ann @ w), 1e-18)))
+        return -float((w @ mu_ann - rf_annual) / vol_p)
+    w_ms = _opt(_neg_sharpe)
     # Equal weight
-    w_ew   = np.ones(n) / n
+    w_ew = np.ones(n) / n
     # Risk-parity: weight ∝ 1/σᵢ
-    sigmas = np.sqrt(np.diag(cov_ann))
-    w_rp   = (1.0 / np.maximum(sigmas, 1e-9))
+    sigmas = np.sqrt(np.maximum(np.diag(cov_ann), 1e-18))
+    w_rp   = 1.0 / sigmas
     w_rp  /= w_rp.sum()
 
     portfolios = {
-        'min_variance':   _result(w_mv, 'Minimum Variance'),
-        'max_sharpe':     _result(w_ms, 'Maximum Sharpe (Tangency)'),
-        'equal_weight':   _result(w_ew, 'Equal Weight'),
-        'risk_parity':    _result(w_rp, 'Risk Parity'),
+        'min_variance': _result(w_mv, 'Minimum Variance'),
+        'max_sharpe':   _result(w_ms, 'Maximum Sharpe (Tangency)'),
+        'equal_weight': _result(w_ew, 'Equal Weight'),
+        'risk_parity':  _result(w_rp, 'Risk Parity'),
     }
 
     # Market portfolio if SPY/QQQ/DIA present
@@ -3983,11 +4056,10 @@ def api_portfolio():
         w_mkt[tickers.index(mkt_sym)] = 1.0
         portfolios['market'] = _result(w_mkt, f'Market Portfolio ({mkt_sym})')
 
-    # ── 7. Efficient frontier ─────────────────────────────────────────────
+    # ── 8. Efficient frontier ─────────────────────────────────────────────
     ret_mv  = float(w_mv @ mu_ann)
     ret_max = float(mu_ann.max())
     ret_min = float(mu_ann.min())
-    # Grid from min-var return to max single-asset return
     grid_lo = min(ret_mv, ret_min)
     grid_hi = max(ret_max * 1.05, ret_mv * 1.5)
     targets = np.linspace(grid_lo, grid_hi, N_FRONT)
@@ -3995,7 +4067,7 @@ def api_portfolio():
     frontier = []
     for tgt in targets:
         extra = [{'type': 'eq', 'fun': lambda w, t=tgt: float(w @ mu_ann) - t}]
-        w_f   = _opt(lambda w: w @ cov_ann @ w, extra)
+        w_f   = _opt(lambda w: float(w @ cov_ann @ w), extra)
         r, v, s = _port_stats(w_f)
         if np.isfinite(r) and np.isfinite(v) and v > 0:
             frontier.append({'vol': round(v * 100, 3),
@@ -4007,10 +4079,10 @@ def api_portfolio():
         min_vol_idx = min(range(len(frontier)), key=lambda i: frontier[i]['vol'])
         frontier    = frontier[min_vol_idx:]
 
-    # ── 8. Capital Market Line: (0, rf) → (vol_ms, ret_ms) extended ──────
+    # ── 9. Capital Market Line: rf → tangency portfolio, extended ─────────
     r_ms, v_ms, _ = _port_stats(w_ms)
-    cml_slope = (r_ms - rf_annual) / v_ms if v_ms > 0 else 0
-    cml_x_max = max(v_ms * 2.0, *(a['vol'] / 100 for a in assets))
+    cml_slope = (r_ms - rf_annual) / v_ms if v_ms > 1e-9 else 0
+    cml_x_max = max(v_ms * 2.0, max(a['vol'] / 100 for a in assets))
     cml = [
         {'vol': 0,                          'ret': round(rf_annual * 100, 3)},
         {'vol': round(cml_x_max * 100, 3),  'ret': round((rf_annual + cml_slope * cml_x_max) * 100, 3)},
