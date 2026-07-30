@@ -105,7 +105,7 @@ login_manager.login_view = 'login'
 login_manager.login_message_category = 'info'
 
 API_KEY      = os.environ.get('POLYGON_API_KEY', 'tnGHxeqXAnkqoV6pUL2XFjDStejcjhb2')
-FRED_API_KEY = os.environ.get('FRED_API_KEY', 'fcdca4c8a04957bdcaa22c32f1e8eb34')
+FRED_API_KEY = os.environ.get('FRED_API_KEY', 'ff84b526d8ac5d859e49a521ddb0662d')
 # ═══════════════════════════════════════════════════════════════════════════════
 #  DATABASE MODELS
 # ═══════════════════════════════════════════════════════════════════════════════
